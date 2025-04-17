@@ -1,4 +1,7 @@
 import streamlit as st
+
+st.set_page_config(page_title="Pose Comparison", layout="centered")
+
 import numpy as np
 import cv2
 import pandas as pd
@@ -112,11 +115,10 @@ def process_image(image_file):
     draw_jurdan_label(image_bgr, f"Jurdan Angle: {jurdan_angle:.1f}")
     return close_side, jurdan_angle, (close_knee_flexion, far_knee_extension), image_bgr
 
-st.set_page_config(page_title="Pose Comparison", layout="centered")
-st.title("Hip Dissociation")
+st.title("Check Hip Dissociation")
 
 username = st.text_input("Enter user name:")
-uploaded_files = st.file_uploader("Upload Two Pose Images", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
+uploaded_files = st.file_uploader("Upload Two Images", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
 
 if uploaded_files and len(uploaded_files) == 2:
     file1, file2 = uploaded_files
