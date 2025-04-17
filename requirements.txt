@@ -1,8 +1,10 @@
 streamlit
-mediapipe
-opencv-python-headless==4.9.0.80
-pillow
+opencv-python-headless
 numpy
 pandas
+Pillow
 fpdf
-streamlit-dragzone
+mediapipe
+
+# Install streamlit-dragzone directly from GitHub
+git+https://github.com/pablocfonseca/streamlit-dragzone.git
