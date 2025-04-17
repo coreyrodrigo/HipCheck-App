@@ -119,7 +119,7 @@ def process_image(image_file):
                     cv2.FONT_HERSHEY_SIMPLEX, 2.2, (255, 255, 255), 5, cv2.LINE_AA)
 
     draw_jurdan_label(image_bgr, f"Jurdan: {jurdan_angle:.1f} | HipCheck: {hipcheck_angle:.1f}")
-    return close_side, jurdan_angle, (close_hip_flexion, far_knee_extension), image_bgr, hipcheck_angle
+    return close_side, jurdan_angle, (close_hip_flexion, far_knee_extension), image_bgr, hipcheck_angle, far_hip_angle
 
 
 st.title("Check Hip Dissociation")
