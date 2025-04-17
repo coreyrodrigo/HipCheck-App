@@ -26,7 +26,8 @@ def load_model():
     base_options = python.BaseOptions(model_asset_path=MODEL_PATH)
     options = vision.PoseLandmarkerOptions(
         base_options=base_options,
-        output_segmentation_masks=False
+        output_segmentation_masks=False,
+        running_mode=vision.RunningMode.IMAGE  # <-- Add this line here
     )
     return vision.PoseLandmarker.create_from_options(options)
 
@@ -218,4 +219,3 @@ if uploaded_files and username:
                 st.warning("Could not determine both left and right Jurdan Angles.")
     else:
         st.warning("Please upload 1 or 2 images only.")
-
