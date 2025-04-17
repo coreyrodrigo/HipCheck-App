@@ -77,13 +77,16 @@ def process_image(image_file):
         far_hip_angle = calc_angle(get_xy(12), get_xy(24), get_xy(26))
         far_knee_angle = calc_angle(get_xy(24), get_xy(26), get_xy(28))
         close_hip_px = to_px(JOINTS["left_hip"])
+        far_hip_px = to_px(JOINTS["right_hip"])
         far_knee_px = to_px(JOINTS["right_knee"])
     else:
         close_hip_angle = calc_angle(get_xy(12), get_xy(24), get_xy(26))
         far_hip_angle = calc_angle(get_xy(11), get_xy(23), get_xy(25))
         far_knee_angle = calc_angle(get_xy(23), get_xy(25), get_xy(27))
         close_hip_px = to_px(JOINTS["right_hip"])
+        far_hip_px = to_px(JOINTS["left_hip"])
         far_knee_px = to_px(JOINTS["left_knee"])
+
 
     close_hip_flexion = 180 - close_hip_angle
     far_hip_flexion = 180 - far_hip_angle
@@ -110,6 +113,7 @@ def process_image(image_file):
 
     draw_label(f"{close_hip_flexion:.1f}", close_hip_px)
     draw_label(f"{far_knee_extension:.1f}", far_knee_px)
+    draw_label(f"{far_hip_angle:.1f}", far_hip_px)  # ← Add this
 
     def draw_jurdan_label(img, text):
         text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 2.2, 5)[0]
