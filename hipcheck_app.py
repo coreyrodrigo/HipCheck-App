@@ -113,7 +113,7 @@ def process_image(image_file):
 
     draw_label(f"{close_hip_flexion:.1f}", close_hip_px)
     draw_label(f"{far_knee_extension:.1f}", far_knee_px)
-    draw_label(f"{far_hip_angle:.1f}", far_hip_px)  # ← Add this
+    draw_label(f"{far_hip_flexion:.1f}", far_hip_px)
 
     def draw_jurdan_label(img, text):
         text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 2.2, 5)[0]
@@ -123,7 +123,7 @@ def process_image(image_file):
                     cv2.FONT_HERSHEY_SIMPLEX, 2.2, (255, 255, 255), 5, cv2.LINE_AA)
 
     draw_jurdan_label(image_bgr, f"Jurdan: {jurdan_angle:.1f} | HipCheck: {hipcheck_angle:.1f}")
-    return close_side, jurdan_angle, (close_hip_flexion, far_knee_extension), image_bgr, hipcheck_angle, far_hip_angle
+    return close_side, jurdan_angle, (close_hip_flexion, far_knee_extension), image_bgr, hipcheck_angle, far_hip_flexion
 
 
 st.title("Check Hip Dissociation")
@@ -145,7 +145,7 @@ if uploaded_files and username:
             st.write(f"Hip Flexion: {flexion:.1f}")
             st.write(f"Knee Extension: {extension:.1f}")
             st.write(f"HipCheck Angle: {hipcheck:.1f}")
-            st.write(f"Far Hip Angle: {far_hip_angle:.1f}")
+            st.write(f"Far Hip Flexion: {far_hip_flexion:.1f}")
 
 
     elif len(uploaded_files) == 2:
@@ -174,9 +174,10 @@ if uploaded_files and username:
                 st.write(f"Right Jurdan Angle: {right_angle:.1f}")
                 st.write(f"**Difference: {diff:.1f}{' ⚠️' if diff > 15 else ''}**")
                 st.write(
-                    f"Left Far Hip Angle: {far_hip_angle1:.1f}" if side1 == "left" else f"Right Far Hip Angle: {far_hip_angle1:.1f}")
+                    f"Left Far Hip Flexion: {far_hip_flexion1:.1f}" if side1 == "left" else f"Right Far Hip Flexion: {far_hip_flexion1:.1f}")
+
                 st.write(
-                    f"Left Far Hip Angle: {far_hip_angle2:.1f}" if side2 == "left" else f"Right Far Hip Angle: {far_hip_angle2:.1f}")
+                    f"Left Far Hip Flexion: {far_hip_flexion2:.1f}" if side2 == "left" else f"Right Far Hip Flexion: {far_hip_flexion2:.1f}")
 
                 # CSV + PDF export (same as before)
                 now = datetime.now()
