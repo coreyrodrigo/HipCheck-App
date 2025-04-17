@@ -26,8 +26,8 @@ def load_model():
     base_options = python.BaseOptions(model_asset_path=MODEL_PATH)
     options = vision.PoseLandmarkerOptions(
         base_options=base_options,
-        output_segmentation_masks=False,
-        running_mode=vision.RunningMode.IMAGE  # <-- Add this line here
+        output_segmentation_masks=True,
+        running_mode=vision.RunningMode.IMAGE
     )
     return vision.PoseLandmarker.create_from_options(options)
 
