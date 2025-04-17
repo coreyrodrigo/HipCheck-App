@@ -3,15 +3,14 @@ import numpy as np
 import cv2
 import pandas as pd
 from PIL import Image
-from datetime import datetime
 import tempfile
+import os
+import urllib.request
 import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
-import os
-import urllib.request
 
-# === Download model if not present ===
+# ========== MODEL SETUP ==========
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "pose_landmarker_full.task")
 if not os.path.exists(MODEL_PATH):
     st.info("Downloading pose model...")
@@ -28,195 +27,121 @@ def load_model():
     )
     return vision.PoseLandmarker.create_from_options(options)
 
-def rotate_image(image_bgr, angle):
-    h, w = image_bgr.shape[:2]
-    center = (w // 2, h // 2)
-    M = cv2.getRotationMatrix2D(center, angle, 1.0)
-    return cv2.warpAffine(image_bgr, M, (w, h))
+# ========== ANGLE UTILS ==========
+def calc_angle(a, b, c):
+    a, b, c = np.array(a), np.array(b), np.array(c)
+    ba = a - b
+    bc = c - b
+    cosine = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc))
+    return np.degrees(np.arccos(np.clip(cosine, -1.0, 1.0)))
 
+# ========== OPENCV MANUAL ADJUSTER ==========
+clicked_points = []
+selected_idx = None
+
+def mouse_event(event, x, y, flags, param):
+    global clicked_points, selected_idx
+    if event == cv2.EVENT_LBUTTONDOWN:
+        for idx, (px, py) in enumerate(clicked_points):
+            if abs(px - x) < 15 and abs(py - y) < 15:
+                selected_idx = idx
+    elif event == cv2.EVENT_MOUSEMOVE and selected_idx is not None:
+        clicked_points[selected_idx] = (x, y)
+    elif event == cv2.EVENT_LBUTTONUP:
+        selected_idx = None
+
+def manual_edit(image, points):
+    global clicked_points
+    clicked_points = points.copy()
+
+    cv2.namedWindow("Adjust Points")
+    cv2.setMouseCallback("Adjust Points", mouse_event)
+
+    while True:
+        temp = image.copy()
+        for pt in clicked_points:
+            cv2.circle(temp, pt, 10, (0, 0, 255), -1)
+        cv2.line(temp, clicked_points[0], clicked_points[1], (0, 255, 255), 4)
+        cv2.line(temp, clicked_points[1], clicked_points[2], (0, 255, 255), 4)
+        cv2.line(temp, clicked_points[2], clicked_points[3], (0, 255, 255), 4)
+
+        hip_angle = calc_angle(clicked_points[0], clicked_points[1], clicked_points[2])
+        knee_angle = calc_angle(clicked_points[1], clicked_points[2], clicked_points[3])
+        jurdan_angle = (180 - hip_angle) + (knee_angle - 90)
+
+        # Text Labels
+        cv2.putText(temp, f"Hip: {hip_angle:.1f}", (clicked_points[1][0] + 10, clicked_points[1][1] - 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+        cv2.putText(temp, f"Knee: {knee_angle:.1f}", (clicked_points[2][0] + 10, clicked_points[2][1] - 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+
+        # === Jurdan Angle Over HIP ===
+        ja_text = f"Jurdan Angle: {jurdan_angle:.1f}"
+        text_size = cv2.getTextSize(ja_text, cv2.FONT_HERSHEY_SIMPLEX, 1.2, 3)[0]
+        ja_x = clicked_points[1][0] - text_size[0] // 2
+        ja_y = clicked_points[1][1] - 60
+        cv2.rectangle(temp, (ja_x - 10, ja_y - 30), (ja_x + text_size[0] + 10, ja_y + 10), (0, 0, 0), -1)
+        cv2.putText(temp, ja_text, (ja_x, ja_y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 3, cv2.LINE_AA)
+
+        cv2.imshow("Adjust Points", temp)
+        if cv2.waitKey(20) & 0xFF == 13:  # Enter to finish
+            break
+
+    cv2.destroyAllWindows()
+    return clicked_points, hip_angle, knee_angle, jurdan_angle, temp
+
+# ========== IMAGE PROCESSING ==========
 def process_image(image_file):
     temp_file = tempfile.NamedTemporaryFile(delete=False)
     temp_file.write(image_file.read())
     image_bgr = cv2.imread(temp_file.name)
-
-    # Rotate for supine view
-    image_bgr = rotate_image(image_bgr, -90)
-
-    # Save temp rotated image for inference
-    rotated_path = temp_file.name + "_rotated.jpg"
-    cv2.imwrite(rotated_path, image_bgr)
-
-    image = mp.Image.create_from_file(rotated_path)
+    image = mp.Image.create_from_file(temp_file.name)
     model = load_model()
     results = model.detect(image)
 
     if not results.pose_landmarks:
-        return None, None, None, None
+        return None, None, None, None, None
 
     landmarks = results.pose_landmarks[0]
-    if len(landmarks) < 33:
-        st.warning("Incomplete pose detected. Try retaking the photo or adjusting orientation.")
+    h, w = image_bgr.shape[:2]
 
-    height, width, _ = image_bgr.shape
+    def to_px(idx): return int(landmarks[idx].x * w), int(landmarks[idx].y * h)
 
-    def to_px(idx):
-        lm = landmarks[idx]
-        return int(lm.x * width), int(lm.y * height)
+    shoulder = to_px(11)  # trunk
+    hip = to_px(23)
+    knee = to_px(25)
+    ankle = to_px(27)
 
-    def get_xy(idx):
-        return np.array([landmarks[idx].x, landmarks[idx].y])
+    initial_points = [shoulder, hip, knee, ankle]
 
-    def calc_angle(a, b, c):
-        ba = a - b
-        bc = c - b
-        cosine = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc))
-        return np.degrees(np.arccos(np.clip(cosine, -1.0, 1.0)))
+    st.info("Manual adjustment window will open. Press ENTER when done.")
+    final_points, hip_angle, knee_angle, jurdan_angle, edited_img = manual_edit(image_bgr, initial_points)
 
-    JOINTS = {
-        "left_shoulder": 11, "right_shoulder": 12,
-        "left_hip": 23, "right_hip": 24,
-        "left_knee": 25, "right_knee": 26,
-        "left_ankle": 27, "right_ankle": 28,
-        "left_foot": 31, "right_foot": 32
-    }
+    return edited_img, final_points, hip_angle, knee_angle, jurdan_angle
 
-    LEFT_LMKS = [11, 23, 25, 27, 31]
-    RIGHT_LMKS = [12, 24, 26, 28, 32]
-    left_avg_z = np.mean([landmarks[i].z for i in LEFT_LMKS])
-    right_avg_z = np.mean([landmarks[i].z for i in RIGHT_LMKS])
-    close_side = 'left' if left_avg_z < right_avg_z else 'right'
+# ========== STREAMLIT UI ==========
+st.set_page_config("Jurdan Angle Manual Editor", layout="centered")
+st.title("Jurdan Angle – Manual Joint Editor")
 
-    if close_side == "left":
-        close_hip_angle = calc_angle(get_xy(11), get_xy(23), get_xy(25))
-        far_knee_angle = calc_angle(get_xy(24), get_xy(26), get_xy(28))
-        close_knee_px = to_px(JOINTS["left_knee"])
-        far_knee_px = to_px(JOINTS["right_knee"])
+uploaded_file = st.file_uploader("Upload image (supine pose side view)", type=["jpg", "jpeg", "png"])
+
+if uploaded_file:
+    edited_img, pts, hip_angle, knee_angle, jurdan_angle = process_image(uploaded_file)
+    if edited_img is not None:
+        st.image(cv2.cvtColor(edited_img, cv2.COLOR_BGR2RGB), channels="RGB", caption="Edited Pose", use_container_width=True)
+
+        st.markdown("### Final Angles")
+        st.write(f"**Hip Angle**: {hip_angle:.1f}°")
+        st.write(f"**Knee Angle**: {knee_angle:.1f}°")
+        st.write(f"**Jurdan Angle**: {jurdan_angle:.1f}°")
+
+        df = pd.DataFrame([{
+            "hip_angle": round(hip_angle, 1),
+            "knee_angle": round(knee_angle, 1),
+            "jurdan_angle": round(jurdan_angle, 1),
+        }])
+        csv = df.to_csv(index=False).encode("utf-8")
+        st.download_button("Download Angles as CSV", csv, file_name="jurdan_angles.csv", mime="text/csv")
     else:
-        close_hip_angle = calc_angle(get_xy(12), get_xy(24), get_xy(26))
-        far_knee_angle = calc_angle(get_xy(23), get_xy(25), get_xy(27))
-        close_knee_px = to_px(JOINTS["right_knee"])
-        far_knee_px = to_px(JOINTS["left_knee"])
-
-    close_knee_flexion = 180 - close_hip_angle
-    far_knee_extension = far_knee_angle - 90
-    jurdan_angle = close_knee_flexion + far_knee_extension
-
-    def draw_joint_line(a, b):
-        cv2.line(image_bgr, to_px(JOINTS[a]), to_px(JOINTS[b]), (0, 255, 255), 6)
-
-    for pair in [("left_shoulder", "left_hip"), ("left_hip", "left_knee"),
-                 ("left_knee", "left_ankle"), ("left_ankle", "left_foot"),
-                 ("right_shoulder", "right_hip"), ("right_hip", "right_knee"),
-                 ("right_knee", "right_ankle"), ("right_ankle", "right_foot")]:
-        draw_joint_line(*pair)
-
-    for idx in JOINTS.values():
-        cv2.circle(image_bgr, to_px(idx), 10, (0, 0, 255), -1)
-
-    def draw_label(text, pos):
-        cv2.putText(image_bgr, text, (pos[0] + 10, pos[1] - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.4, (255, 255, 255), 3, cv2.LINE_AA)
-
-    draw_label(f"{close_knee_flexion:.1f}", close_knee_px)
-    draw_label(f"{far_knee_extension:.1f}", far_knee_px)
-
-    def draw_jurdan_label(img, text):
-        text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 2.2, 5)[0]
-        center_x = (img.shape[1] - text_size[0]) // 2
-        cv2.rectangle(img, (center_x - 40, 60), (center_x + text_size[0] + 40, 160), (0, 0, 0), -1)
-        cv2.putText(img, text, (center_x, 130),
-                    cv2.FONT_HERSHEY_SIMPLEX, 2.2, (255, 255, 255), 5, cv2.LINE_AA)
-
-    draw_jurdan_label(image_bgr, f"Jurdan Angle: {jurdan_angle:.1f}")
-    return close_side, jurdan_angle, (close_knee_flexion, far_knee_extension), image_bgr
-
-# === Streamlit UI ===
-st.title("Check Hip Dissociation")
-
-username = st.text_input("Enter user name:")
-uploaded_files = st.file_uploader("Upload Two Images", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
-
-if uploaded_files and len(uploaded_files) == 2:
-    file1, file2 = uploaded_files
-
-    if file1 and file2 and username:
-        side1, jurdan1, (flex1, ext1), img1 = process_image(file1)
-        side2, jurdan2, (flex2, ext2), img2 = process_image(file2)
-
-        if side1 is None or side2 is None:
-            st.error("Pose not detected in one or both images.")
-        else:
-            angles = {side1: jurdan1, side2: jurdan2}
-            left_angle = angles.get('left', None)
-            right_angle = angles.get('right', None)
-
-            if left_angle is not None and right_angle is not None:
-                diff = abs(left_angle - right_angle)
-                st.markdown("### Pose Images with Keypoints")
-                img_col1, img_col2 = st.columns(2)
-                with img_col1:
-                    st.image(cv2.cvtColor(img1, cv2.COLOR_BGR2RGB), caption=f"{side1.capitalize()} Closer", use_container_width=True)
-                with img_col2:
-                    st.image(cv2.cvtColor(img2, cv2.COLOR_BGR2RGB), caption=f"{side2.capitalize()} Closer", use_container_width=True)
-
-                st.markdown("### Jurdan Angles")
-                st.write(f"Left Jurdan Angle: {left_angle:.1f}")
-                st.write(f"Right Jurdan Angle: {right_angle:.1f}")
-                st.write(f"**Difference: {diff:.1f}{' ⚠️' if diff > 15 else ''}**")
-
-                now = datetime.now()
-                df = pd.DataFrame([{
-                    "username": username,
-                    "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
-                    "left_jurdan_angle": round(left_angle, 1),
-                    "right_jurdan_angle": round(right_angle, 1),
-                    "left_hip_flexion": round(flex1 if side1 == 'left' else flex2, 1),
-                    "right_hip_flexion": round(flex2 if side2 == 'right' else flex1, 1),
-                    "left_extension": round(ext1 if side1 == 'right' else ext2, 1),
-                    "right_extension": round(ext2 if side2 == 'right' else ext1, 1),
-                    "jurdan_diff": round(diff, 1)
-                }])
-                csv = df.to_csv(index=False).encode("utf-8")
-                st.download_button("Download Comparison CSV",
-                                   data=csv,
-                                   file_name=f"{username}_jurdan_comparison_{now.strftime('%Y%m%d_%H%M%S')}.csv",
-                                   mime="text/csv")
-
-                from fpdf import FPDF
-                _, img1_buf = cv2.imencode(".jpg", img1)
-                _, img2_buf = cv2.imencode(".jpg", img2)
-                img1_bytes = img1_buf.tobytes()
-                img2_bytes = img2_buf.tobytes()
-
-                pdf = FPDF(orientation='L', unit='mm', format='A4')
-                pdf.add_page()
-                pdf.set_font("Arial", "B", 24)
-                pdf.cell(0, 10, f"{username} - Jurdan Angle Comparison", ln=True, align="C")
-
-                w_half = 140
-                img1_path = os.path.join(tempfile.gettempdir(), "img1_temp.jpg")
-                img2_path = os.path.join(tempfile.gettempdir(), "img2_temp.jpg")
-                with open(img1_path, "wb") as f: f.write(img1_bytes)
-                with open(img2_path, "wb") as f: f.write(img2_bytes)
-
-                pdf.image(img1_path, x=10, y=30, w=w_half)
-                pdf.image(img2_path, x=150, y=30, w=w_half)
-
-                pdf.set_xy(10, 135)
-                pdf.set_font("Arial", size=16)
-                pdf.cell(w_half, 10, f"Left Jurdan Angle: {left_angle:.1f}", align="C")
-
-                pdf.set_xy(150, 135)
-                pdf.cell(w_half, 10, f"Right Jurdan Angle: {right_angle:.1f}", align="C")
-
-                pdf.set_xy(10, 155)
-                pdf.set_font("Arial", "B", 18)
-                pdf.cell(0, 10, f"Difference: {diff:.1f}", ln=True, align="C")
-
-                pdf_bytes = pdf.output(dest='S').encode('latin1')
-                st.download_button("Download PDF Report",
-                                   data=pdf_bytes,
-                                   file_name=f"{username}_jurdan_report.pdf",
-                                   mime="application/pdf")
-            else:
-                st.warning("Could not determine both left and right Jurdan Angles.")
+        st.error("Pose not detected.")
