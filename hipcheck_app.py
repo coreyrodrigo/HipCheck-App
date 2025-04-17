@@ -130,7 +130,7 @@ uploaded_files = st.file_uploader("Upload 1 or 2 Images", type=["jpg", "jpeg", "
 if uploaded_files and username:
     if len(uploaded_files) == 1:
         file = uploaded_files[0]
-        side, jurdan, (flexion, extension), img = process_image(file)
+        side, jurdan, (flexion, extension), img, hipcheck = process_image(file)
 
         if side is None:
             st.error("Pose not detected in the image.")
@@ -140,10 +140,12 @@ if uploaded_files and username:
             st.write(f"{side.capitalize()} Jurdan Angle: {jurdan:.1f}")
             st.write(f"Hip Flexion: {flexion:.1f}")
             st.write(f"Knee Extension: {extension:.1f}")
+            st.write(f"HipCheck Angle: {hipcheck:.1f}")
+
     elif len(uploaded_files) == 2:
         file1, file2 = uploaded_files
-        side1, jurdan1, (flex1, ext1), img1 = process_image(file1)
-        side2, jurdan2, (flex2, ext2), img2 = process_image(file2)
+        side1, jurdan1, (flex1, ext1), img1, hipcheck1 = process_image(file1)
+        side2, jurdan2, (flex2, ext2), img2, hipcheck2 = process_image(file2)
 
         if side1 is None or side2 is None:
             st.error("Pose not detected in one or both images.")
