@@ -72,19 +72,19 @@ def process_image(image_file):
     close_side = 'left' if left_avg_z < right_avg_z else 'right'
 
     if close_side == "left":
-        close_knee_angle = calc_angle(get_xy(11), get_xy(23), get_xy(25))
+        close_hip_angle = calc_angle(get_xy(11), get_xy(23), get_xy(25))
         far_knee_angle = calc_angle(get_xy(24), get_xy(26), get_xy(28))
-        close_knee_px = to_px(JOINTS["left_knee"])
+        close_hip_px = to_px(JOINTS["left_hip"])
         far_knee_px = to_px(JOINTS["right_knee"])
     else:
-        close_knee_angle = calc_angle(get_xy(12), get_xy(24), get_xy(26))
+        close_hip_angle = calc_angle(get_xy(12), get_xy(24), get_xy(26))
         far_knee_angle = calc_angle(get_xy(23), get_xy(25), get_xy(27))
-        close_knee_px = to_px(JOINTS["right_knee"])
+        close_hip_px = to_px(JOINTS["right_hip"])
         far_knee_px = to_px(JOINTS["left_knee"])
 
-    close_knee_flexion = 180 - close_knee_angle
+    close_hip_flexion = 180 - close_hip_angle
     far_knee_extension = far_knee_angle - 90
-    jurdan_angle = close_knee_flexion + far_knee_extension
+    jurdan_angle = close_hip_flexion + far_knee_extension
 
     def draw_joint_line(a, b):
         cv2.line(image_bgr, to_px(JOINTS[a]), to_px(JOINTS[b]), (0, 255, 255), 6)
@@ -102,7 +102,7 @@ def process_image(image_file):
         cv2.putText(image_bgr, text, (pos[0] + 10, pos[1] - 10),
                     cv2.FONT_HERSHEY_SIMPLEX, 1.4, (255, 255, 255), 3, cv2.LINE_AA)
 
-    draw_label(f"{close_knee_flexion:.1f}", close_knee_px)
+    draw_label(f"{close_hip_flexion:.1f}", close_hip_px)
     draw_label(f"{far_knee_extension:.1f}", far_knee_px)
 
     def draw_jurdan_label(img, text):
@@ -113,7 +113,7 @@ def process_image(image_file):
                     cv2.FONT_HERSHEY_SIMPLEX, 2.2, (255, 255, 255), 5, cv2.LINE_AA)
 
     draw_jurdan_label(image_bgr, f"Jurdan Angle: {jurdan_angle:.1f}")
-    return close_side, jurdan_angle, (close_knee_flexion, far_knee_extension), image_bgr
+    return close_side, jurdan_angle, (close_hip_flexion, far_knee_extension), image_bgr
 
 st.title("Check Hip Dissociation")
 
