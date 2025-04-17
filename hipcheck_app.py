@@ -1,7 +1,4 @@
 import streamlit as st
-
-st.set_page_config(page_title="Pose Comparison", layout="centered")
-
 import numpy as np
 import cv2
 import pandas as pd
@@ -26,23 +23,41 @@ def load_model():
     base_options = python.BaseOptions(model_asset_path=MODEL_PATH)
     options = vision.PoseLandmarkerOptions(
         base_options=base_options,
-        output_segmentation_masks=False
+        output_segmentation_masks=True,
+        running_mode=vision.RunningMode.IMAGE
     )
     return vision.PoseLandmarker.create_from_options(options)
+
+def rotate_image(image_bgr, angle):
+    h, w = image_bgr.shape[:2]
+    center = (w // 2, h // 2)
+    M = cv2.getRotationMatrix2D(center, angle, 1.0)
+    return cv2.warpAffine(image_bgr, M, (w, h))
 
 def process_image(image_file):
     temp_file = tempfile.NamedTemporaryFile(delete=False)
     temp_file.write(image_file.read())
-    image = mp.Image.create_from_file(temp_file.name)
+    image_bgr = cv2.imread(temp_file.name)
+
+    # Rotate for supine view
+    image_bgr = rotate_image(image_bgr, -90)
+
+    # Save temp rotated image for inference
+    rotated_path = temp_file.name + "_rotated.jpg"
+    cv2.imwrite(rotated_path, image_bgr)
+
+    image = mp.Image.create_from_file(rotated_path)
     model = load_model()
     results = model.detect(image)
 
     if not results.pose_landmarks:
         return None, None, None, None
 
-    image_bgr = cv2.imread(temp_file.name)
-    height, width, _ = image_bgr.shape
     landmarks = results.pose_landmarks[0]
+    if len(landmarks) < 33:
+        st.warning("Incomplete pose detected. Try retaking the photo or adjusting orientation.")
+
+    height, width, _ = image_bgr.shape
 
     def to_px(idx):
         lm = landmarks[idx]
@@ -72,17 +87,17 @@ def process_image(image_file):
     close_side = 'left' if left_avg_z < right_avg_z else 'right'
 
     if close_side == "left":
-        close_knee_angle = calc_angle(get_xy(11), get_xy(23), get_xy(25))
+        close_hip_angle = calc_angle(get_xy(11), get_xy(23), get_xy(25))
         far_knee_angle = calc_angle(get_xy(24), get_xy(26), get_xy(28))
         close_knee_px = to_px(JOINTS["left_knee"])
         far_knee_px = to_px(JOINTS["right_knee"])
     else:
-        close_knee_angle = calc_angle(get_xy(12), get_xy(24), get_xy(26))
+        close_hip_angle = calc_angle(get_xy(12), get_xy(24), get_xy(26))
         far_knee_angle = calc_angle(get_xy(23), get_xy(25), get_xy(27))
         close_knee_px = to_px(JOINTS["right_knee"])
         far_knee_px = to_px(JOINTS["left_knee"])
 
-    close_knee_flexion = 180 - close_knee_angle
+    close_knee_flexion = 180 - close_hip_angle
     far_knee_extension = far_knee_angle - 90
     jurdan_angle = close_knee_flexion + far_knee_extension
 
@@ -115,6 +130,7 @@ def process_image(image_file):
     draw_jurdan_label(image_bgr, f"Jurdan Angle: {jurdan_angle:.1f}")
     return close_side, jurdan_angle, (close_knee_flexion, far_knee_extension), image_bgr
 
+# === Streamlit UI ===
 st.title("Check Hip Dissociation")
 
 username = st.text_input("Enter user name:")
@@ -154,8 +170,8 @@ if uploaded_files and len(uploaded_files) == 2:
                     "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
                     "left_jurdan_angle": round(left_angle, 1),
                     "right_jurdan_angle": round(right_angle, 1),
-                    "left_flexion": round(flex1 if side1 == 'left' else flex2, 1),
-                    "right_flexion": round(flex2 if side2 == 'right' else flex1, 1),
+                    "left_hip_flexion": round(flex1 if side1 == 'left' else flex2, 1),
+                    "right_hip_flexion": round(flex2 if side2 == 'right' else flex1, 1),
                     "left_extension": round(ext1 if side1 == 'right' else ext2, 1),
                     "right_extension": round(ext2 if side2 == 'right' else ext1, 1),
                     "jurdan_diff": round(diff, 1)
