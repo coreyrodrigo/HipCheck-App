@@ -39,7 +39,7 @@ def process_image(image_file):
     results = model.detect(image)
 
     if not results.pose_landmarks:
-        return None, None, None, None
+        return None, None, None, None, None
 
     image_bgr = cv2.imread(temp_file.name)
     height, width, _ = image_bgr.shape
@@ -74,19 +74,24 @@ def process_image(image_file):
 
     if close_side == "left":
         close_hip_angle = calc_angle(get_xy(11), get_xy(23), get_xy(25))
+        far_hip_angle = calc_angle(get_xy(12), get_xy(24), get_xy(26))
         far_knee_angle = calc_angle(get_xy(24), get_xy(26), get_xy(28))
         close_hip_px = to_px(JOINTS["left_hip"])
         far_knee_px = to_px(JOINTS["right_knee"])
     else:
         close_hip_angle = calc_angle(get_xy(12), get_xy(24), get_xy(26))
+        far_hip_angle = calc_angle(get_xy(11), get_xy(23), get_xy(25))
         far_knee_angle = calc_angle(get_xy(23), get_xy(25), get_xy(27))
         close_hip_px = to_px(JOINTS["right_hip"])
         far_knee_px = to_px(JOINTS["left_knee"])
 
     close_hip_flexion = 180 - close_hip_angle
+    far_hip_flexion = 180 - far_hip_angle
     far_knee_extension = far_knee_angle - 90
     jurdan_angle = close_hip_flexion + far_knee_extension
+    hipcheck_angle = jurdan_angle - far_hip_flexion
 
+    # === Drawing (unchanged) ===
     def draw_joint_line(a, b):
         cv2.line(image_bgr, to_px(JOINTS[a]), to_px(JOINTS[b]), (0, 255, 255), 6)
 
@@ -113,12 +118,13 @@ def process_image(image_file):
         cv2.putText(img, text, (center_x, 130),
                     cv2.FONT_HERSHEY_SIMPLEX, 2.2, (255, 255, 255), 5, cv2.LINE_AA)
 
-    draw_jurdan_label(image_bgr, f"Jurdan Angle: {jurdan_angle:.1f}")
-    return close_side, jurdan_angle, (close_hip_flexion, far_knee_extension), image_bgr
+    draw_jurdan_label(image_bgr, f"Jurdan: {jurdan_angle:.1f} | HipCheck: {hipcheck_angle:.1f}")
+    return close_side, jurdan_angle, (close_hip_flexion, far_knee_extension), image_bgr, hipcheck_angle
+
 
 st.title("Check Hip Dissociation")
 
-username = st.text_input("Enter user name:")
+username = st.text_input("Enter Patient Name:")
 uploaded_files = st.file_uploader("Upload 1 or 2 Images", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
 
 if uploaded_files and username:
@@ -163,7 +169,7 @@ if uploaded_files and username:
                 # CSV + PDF export (same as before)
                 now = datetime.now()
                 df = pd.DataFrame([{
-                    "username": username,
+                    "Name": username,
                     "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
                     "left_jurdan_angle": round(left_angle, 1),
                     "right_jurdan_angle": round(right_angle, 1),
@@ -213,7 +219,7 @@ if uploaded_files and username:
                 pdf_bytes = pdf.output(dest='S').encode('latin1')
                 st.download_button("Download PDF Report",
                                    data=pdf_bytes,
-                                   file_name=f"{username}_jurdan_report.pdf",
+                                   file_name=f"{username}_HipCheck_report.pdf",
                                    mime="application/pdf")
             else:
                 st.warning("Could not determine both left and right Jurdan Angles.")
