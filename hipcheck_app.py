@@ -87,7 +87,7 @@ def process_image(image_file):
     jurdan_angle = close_knee_flexion + far_knee_extension
 
     def draw_joint_line(a, b):
-        cv2.line(image_bgr, to_px(JOINTS[a]), to_px(JOINTS[b]), (0, 255, 255), 16)
+        cv2.line(image_bgr, to_px(JOINTS[a]), to_px(JOINTS[b]), (0, 255, 255), 6)
 
     for pair in [("left_shoulder", "left_hip"), ("left_hip", "left_knee"),
                  ("left_knee", "left_ankle"), ("left_ankle", "left_foot"),
@@ -99,18 +99,18 @@ def process_image(image_file):
         cv2.circle(image_bgr, to_px(idx), 10, (0, 0, 255), -1)
 
     def draw_label(text, pos):
-        cv2.putText(image_bgr, text, (pos[0] + 10, pos[1] - 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 3.2, (255, 255, 255), 6, cv2.LINE_AA)
+        cv2.putText(image_bgr, text, (pos[0] + 10, pos[1] - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.4, (255, 255, 255), 3, cv2.LINE_AA)
 
     draw_label(f"{close_knee_flexion:.1f}", close_knee_px)
     draw_label(f"{far_knee_extension:.1f}", far_knee_px)
 
     def draw_jurdan_label(img, text):
-        text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 9.6, 20)[0]
+        text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 2.2, 5)[0]
         center_x = (img.shape[1] - text_size[0]) // 2
-        cv2.rectangle(img, (center_x - 40, 60), (center_x + text_size[0] + 40, 240), (0, 0, 0), -1)
-        cv2.putText(img, text, (center_x, 200),
-                    cv2.FONT_HERSHEY_SIMPLEX, 9.6, (255, 255, 255), 20, cv2.LINE_AA)
+        cv2.rectangle(img, (center_x - 40, 60), (center_x + text_size[0] + 40, 160), (0, 0, 0), -1)
+        cv2.putText(img, text, (center_x, 130),
+                    cv2.FONT_HERSHEY_SIMPLEX, 2.2, (255, 255, 255), 5, cv2.LINE_AA)
 
     draw_jurdan_label(image_bgr, f"Jurdan Angle: {jurdan_angle:.1f}")
     return close_side, jurdan_angle, (close_knee_flexion, far_knee_extension), image_bgr
