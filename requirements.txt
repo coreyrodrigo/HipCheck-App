@@ -1,6 +1,5 @@
 streamlit
 mediapipe
-opencv-python
 pillow
 numpy
 pandas
