@@ -118,12 +118,23 @@ def process_image(image_file):
 st.title("Check Hip Dissociation")
 
 username = st.text_input("Enter user name:")
-uploaded_files = st.file_uploader("Upload Two Images", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
+uploaded_files = st.file_uploader("Upload 1 or 2 Images", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
 
-if uploaded_files and len(uploaded_files) == 2:
-    file1, file2 = uploaded_files
+if uploaded_files and username:
+    if len(uploaded_files) == 1:
+        file = uploaded_files[0]
+        side, jurdan, (flexion, extension), img = process_image(file)
 
-    if file1 and file2 and username:
+        if side is None:
+            st.error("Pose not detected in the image.")
+        else:
+            st.image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), caption=f"{side.capitalize()} Closer", use_container_width=True)
+            st.markdown("### Jurdan Angle")
+            st.write(f"{side.capitalize()} Jurdan Angle: {jurdan:.1f}")
+            st.write(f"Hip Flexion: {flexion:.1f}")
+            st.write(f"Knee Extension: {extension:.1f}")
+    elif len(uploaded_files) == 2:
+        file1, file2 = uploaded_files
         side1, jurdan1, (flex1, ext1), img1 = process_image(file1)
         side2, jurdan2, (flex2, ext2), img2 = process_image(file2)
 
@@ -131,8 +142,8 @@ if uploaded_files and len(uploaded_files) == 2:
             st.error("Pose not detected in one or both images.")
         else:
             angles = {side1: jurdan1, side2: jurdan2}
-            left_angle = angles.get('left', None)
-            right_angle = angles.get('right', None)
+            left_angle = angles.get('left')
+            right_angle = angles.get('right')
 
             if left_angle is not None and right_angle is not None:
                 diff = abs(left_angle - right_angle)
@@ -148,6 +159,7 @@ if uploaded_files and len(uploaded_files) == 2:
                 st.write(f"Right Jurdan Angle: {right_angle:.1f}")
                 st.write(f"**Difference: {diff:.1f}{' ⚠️' if diff > 15 else ''}**")
 
+                # CSV + PDF export (same as before)
                 now = datetime.now()
                 df = pd.DataFrame([{
                     "username": username,
@@ -204,3 +216,6 @@ if uploaded_files and len(uploaded_files) == 2:
                                    mime="application/pdf")
             else:
                 st.warning("Could not determine both left and right Jurdan Angles.")
+    else:
+        st.warning("Please upload 1 or 2 images only.")
+
