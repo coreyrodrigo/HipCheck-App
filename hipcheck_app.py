@@ -252,9 +252,17 @@ st.markdown(
 
     _This tool was developed by **Corey Rodrigo** for performance, rehab, and medical staff evaluation._
 
+    **Acknowledgment**  
+    The concept of the Jurdan test originates from the work of **Jurdan Mendiguchia** and colleagues.  
+    This application builds upon the principles described in:
+
+    > Lahti, J. (2022). *A multifactorial and individualized approach to reduce hamstring muscle injuries in professional football players*.  
+    > DOI: [10.13140/RG.2.2.15039.64161](https://doi.org/10.13140/RG.2.2.15039.64161)
+
     **© 2025 Corey Rodrigo.** This tool and all associated metrics, including the HipCheck Angle,  
     are protected under copyright law. Unauthorized reproduction, distribution, or adaptation  
     of any part of this tool is strictly prohibited without prior written permission.  
     All rights reserved.
     """
 )
+
