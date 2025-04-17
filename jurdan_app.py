@@ -113,7 +113,7 @@ def process_image(image_file):
     return close_side, jurdan_angle, (close_knee_flexion, far_knee_extension), image_bgr
 
 st.set_page_config(page_title="Pose Comparison", layout="centered")
-st.title("Compare Left vs Right Pose")
+st.title("Hip Dissociation")
 
 username = st.text_input("Enter user name:")
 uploaded_files = st.file_uploader("Upload Two Pose Images", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
