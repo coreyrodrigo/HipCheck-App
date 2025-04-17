@@ -5,4 +5,5 @@ pillow
 numpy
 pandas
 fpdf
+opencv-python-headless
 
