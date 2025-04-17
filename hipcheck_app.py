@@ -92,7 +92,7 @@ def process_image(image_file):
     far_hip_flexion = 180 - far_hip_angle
     far_knee_extension = far_knee_angle - 90
     jurdan_angle = close_hip_flexion + far_knee_extension
-    hipcheck_angle = jurdan_angle - far_hip_flexion
+    hipcheck_angle = jurdan_angle - (90-far_hip_flexion)
 
     # === Drawing (unchanged) ===
     def draw_joint_line(a, b):
