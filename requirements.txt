@@ -5,6 +5,4 @@ pandas
 Pillow
 fpdf
 mediapipe
-
-# Install streamlit-dragzone directly from GitHub
 git+https://github.com/pablocfonseca/streamlit-dragzone.git
