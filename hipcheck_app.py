@@ -46,6 +46,22 @@ def calculate_angles(joints):
     jurdan_angle = hip_flexion + knee_extension
     return hip_flexion, knee_extension, jurdan_angle
 
+def annotate_image(image_bgr, joints, flexion, extension, jurdan):
+    def draw_label(text, pos):
+        cv2.putText(image_bgr, text, (pos[0] + 10, pos[1] - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.4, (255, 255, 255), 3, cv2.LINE_AA)
+
+    draw_label(f"{flexion:.1f}", joints['hip'])
+    draw_label(f"{extension:.1f}", joints['knee'])
+
+    text = f"Jurdan Angle: {jurdan:.1f}"
+    text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 2.2, 5)[0]
+    center_x = (image_bgr.shape[1] - text_size[0]) // 2
+    cv2.rectangle(image_bgr, (center_x - 40, 60), (center_x + text_size[0] + 40, 160), (0, 0, 0), -1)
+    cv2.putText(image_bgr, text, (center_x, 130),
+                cv2.FONT_HERSHEY_SIMPLEX, 2.2, (255, 255, 255), 5, cv2.LINE_AA)
+    return image_bgr
+
 def process_image(image_file):
     temp_file = tempfile.NamedTemporaryFile(delete=False)
     temp_file.write(image_file.read())
@@ -98,6 +114,8 @@ if uploaded_files and username:
                 continue
 
         flexion, extension, jurdan = calculate_angles(joints)
+        image_bgr = annotate_image(image_bgr, joints, flexion, extension, jurdan)
+        img_pil = Image.fromarray(cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB))
         images.append((img_pil, jurdan))
         all_data.append({
             "Image Name": file.name,
