@@ -238,3 +238,23 @@ if uploaded_files and username:
                 st.warning("Could not determine both left and right Jurdan Angles.")
     else:
         st.warning("Please upload 1 or 2 images only.")
+
+st.markdown("---")
+st.markdown(
+    """
+    ### About This Tool  
+    **HipCheck Angle** is a derived metric designed to assess hip dissociation by combining  
+    the forward flexion of the closer-side hip and the extension of the far-side knee,  
+    then adjusting for the far-side hip mobility. A larger HipCheck value may indicate  
+    better separation and mobility between hips and lower extremities during functional movement.
+
+    ---
+
+    _This tool was developed by **Corey Rodrigo** for performance, rehab, and medical staff evaluation._
+
+    **© 2025 Corey Rodrigo.** This tool and all associated metrics, including the HipCheck Angle,  
+    are protected under copyright law. Unauthorized reproduction, distribution, or adaptation  
+    of any part of this tool is strictly prohibited without prior written permission.  
+    All rights reserved.
+    """
+)
