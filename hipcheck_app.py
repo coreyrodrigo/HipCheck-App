@@ -130,7 +130,7 @@ uploaded_files = st.file_uploader("Upload 1 or 2 Images", type=["jpg", "jpeg", "
 if uploaded_files and username:
     if len(uploaded_files) == 1:
         file = uploaded_files[0]
-        side, jurdan, (flexion, extension), img, hipcheck = process_image(file)
+        side, jurdan, (flexion, extension), img, hipcheck, far_hip_angle = process_image(file)
 
         if side is None:
             st.error("Pose not detected in the image.")
@@ -141,11 +141,13 @@ if uploaded_files and username:
             st.write(f"Hip Flexion: {flexion:.1f}")
             st.write(f"Knee Extension: {extension:.1f}")
             st.write(f"HipCheck Angle: {hipcheck:.1f}")
+            st.write(f"Far Hip Angle: {far_hip_angle:.1f}")
+
 
     elif len(uploaded_files) == 2:
         file1, file2 = uploaded_files
-        side1, jurdan1, (flex1, ext1), img1, hipcheck1 = process_image(file1)
-        side2, jurdan2, (flex2, ext2), img2, hipcheck2 = process_image(file2)
+        side1, jurdan1, (flex1, ext1), img1, hipcheck1, far_hip_angle1 = process_image(file1)
+        side2, jurdan2, (flex2, ext2), img2, hipcheck2, far_hip_angle2 = process_image(file2)
 
         if side1 is None or side2 is None:
             st.error("Pose not detected in one or both images.")
@@ -167,6 +169,10 @@ if uploaded_files and username:
                 st.write(f"Left Jurdan Angle: {left_angle:.1f}")
                 st.write(f"Right Jurdan Angle: {right_angle:.1f}")
                 st.write(f"**Difference: {diff:.1f}{' ⚠️' if diff > 15 else ''}**")
+                st.write(
+                    f"Left Far Hip Angle: {far_hip_angle1:.1f}" if side1 == "left" else f"Right Far Hip Angle: {far_hip_angle1:.1f}")
+                st.write(
+                    f"Left Far Hip Angle: {far_hip_angle2:.1f}" if side2 == "left" else f"Right Far Hip Angle: {far_hip_angle2:.1f}")
 
                 # CSV + PDF export (same as before)
                 now = datetime.now()
