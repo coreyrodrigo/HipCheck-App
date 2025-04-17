@@ -74,14 +74,14 @@ def process_image(image_file):
 
     if close_side == "left":
         close_hip_angle = calc_angle(get_xy(11), get_xy(23), get_xy(25))
-        far_hip_angle = calc_angle(get_xy(12), get_xy(24), get_xy(26))
+        far_hip_angle = (calc_angle(get_xy(12), get_xy(24), get_xy(26)) -180 )*-1
         far_knee_angle = calc_angle(get_xy(24), get_xy(26), get_xy(28))
         close_hip_px = to_px(JOINTS["left_hip"])
         far_hip_px = to_px(JOINTS["right_hip"])
         far_knee_px = to_px(JOINTS["right_knee"])
     else:
-        close_hip_angle = calc_angle(get_xy(12), get_xy(24), get_xy(26))
-        far_hip_angle = calc_angle(get_xy(11), get_xy(23), get_xy(25))
+        close_hip_angle = calc_angle(get_xy(12), get_xy(24), get_xy(26)) - 180)*-1
+        far_hip_angle = (calc_angle(get_xy(11), get_xy(23), get_xy(25))
         far_knee_angle = calc_angle(get_xy(23), get_xy(25), get_xy(27))
         close_hip_px = to_px(JOINTS["right_hip"])
         far_hip_px = to_px(JOINTS["left_hip"])
