@@ -2,6 +2,24 @@ import streamlit as st
 
 st.set_page_config(page_title="Pose Comparison", layout="centered")
 
+import sys, platform
+try:
+    import cv2
+    import streamlit as st
+    st.info(
+        f"OpenCV imported OK • cv2={cv2.__version__} • Python={sys.version.split()[0]} • "
+        f"OS={platform.system()} {platform.release()}"
+    )
+except Exception as e:
+    import streamlit as st
+    st.error(
+        "OpenCV failed to import. Ensure `opencv-python-headless` is in requirements.txt "
+        "and **not** `opencv-python`/`opencv-contrib-python`. On Streamlit Cloud, also add "
+        "`libglib2.0-0` and `libgl1` to `packages.txt`.\n\n"
+        f"Error: {e}"
+    )
+    raise
+
 import numpy as np
 import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
