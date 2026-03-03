@@ -32,9 +32,10 @@ from streamlit_drawable_canvas import st_canvas
 st.title("Pose Comparison")
 st.markdown(
     "- Canvas shows the **entire image** (no cropping, no distortion).\n"
-    "- **Width is never limited**; we only limit **height ≈ 560 px** (for usability).\n"
+    "- **Width is never limited**; we only limit **height ≈ 560 px** for usability.\n"
     "- Images are used **as-is from your phone**: we apply **EXIF orientation** only (no enhancement).\n"
-    "- Upload up to **two** photos; the app auto‑assigns **Left closer** / **Right closer** from depth."
+    "- Upload up to **two** photos; the app auto‑assigns **Left closer** / **Right closer** from depth.\n"
+    "- **Step‑wise**: adjust keypoints → **Confirm points** → we draw the stick figure & compute **Jurdan** + **HipCheck**."
 )
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -166,6 +167,11 @@ def joints_from_landmarks(lmks, w: int, h: int) -> Dict[str, Tuple[int, int]]:
     return out
 
 def compute_metrics(full_joints: Dict[str, Tuple[int, int]], w: int, h: int, side: str) -> Dict[str, float]:
+    """
+    Returns:
+      close_side, close_hip_flexion_deg, far_hip_flexion_deg,
+      far_knee_extension_deg, jurdan_angle_deg, hipcheck_angle_deg
+    """
     def P(n):  # normalized
         x, y = full_joints[n]
         return np.array([x / w, y / h], dtype=float)
@@ -179,9 +185,9 @@ def compute_metrics(full_joints: Dict[str, Tuple[int, int]], w: int, h: int, sid
         fh = calc_angle(P("left_shoulder"), P("left_hip"), P("left_knee"))
         fk = calc_angle(P("left_hip"), P("left_knee"), P("left_ankle"))
 
-    chf = 180 - ch if np.isfinite(ch) else np.nan
-    fhf = 180 - fh if np.isfinite(fh) else np.nan
-    fke = (fk - 90) if np.isfinite(fk) else np.nan
+    chf = 180 - ch if np.isfinite(ch) else np.nan              # Close hip flexion
+    fhf = 180 - fh if np.isfinite(fh) else np.nan              # Far hip flexion
+    fke = (fk - 90) if np.isfinite(fk) else np.nan             # Far knee extension
     jurdan = (chf + fke) if np.isfinite(chf) and np.isfinite(fke) else np.nan
     hipcheck = (jurdan - (90 - fhf)) if np.isfinite(jurdan) and np.isfinite(fhf) else np.nan
 
@@ -223,54 +229,36 @@ def annotate_full(img_full: Image.Image, full_joints: Dict[str, Tuple[int, int]]
         y += 22
     return out
 
-# Robust results image display that avoids 'use_container_width' issues on your runtime
-def show_img_safe(pil_img, title: str):
-    st.subheader(title)
-    # Try NumPy array first (no keywords)
-    try:
-        st.image(np.array(pil_img))
-        return
-    except Exception:
-        pass
-    # Fallback to PNG bytes (no keywords)
-    try:
-        buf = BytesIO()
-        pil_img.save(buf, format="PNG")
-        st.image(buf.getvalue())
-        return
-    except Exception:
-        pass
-    # Final fallback: render via data URL
-    try:
-        st.markdown(f'<img src="{pil_to_data_url(pil_img)}" />', unsafe_allow_html=True)
-    except Exception as e:
-        st.error(f"Could not render image: {e}")
-
 # ──────────────────────────────────────────────────────────────────────────────
-# Core per-image routine (anti‑flicker + stable sizing)
+# Core per-image routine (anti‑flicker + stable sizing + step‑wise confirm)
 # ──────────────────────────────────────────────────────────────────────────────
 def process_image(file, label: str, index: int):
     """
-    - Load using EXIF orientation only (matches phone view).
-    - DISPLAY SCALE: limit only by height ≈ 560 px; width is never capped by us.
-    - Compute display size and initial Fabric JSON ONCE per image; persist in session_state.
-    - Canvas uses update_streamlit=False (no reruns while dragging).
-    - Joints map back to full-res for metrics & final annotation.
-    - Returns (annotated_fullres, metrics, side).
+    Step‑wise:
+      1) Adjust keypoints on canvas (no live flicker).
+      2) Click "Confirm points" → annotate & compute angles (Jurdan + HipCheck).
+      3) "Edit points" re‑enables the canvas.
+
+    Returns (confirmed: bool, side: str, disp_w: int, annot_disp_img: PIL.Image|None, metrics: dict|None)
     """
     if file is None:
-        return None, None, None
+        return False, None, None, None, None
 
-    # Unique ID per upload (prevents collisions when names/sizes match)
+    # Unique per‑image id (prevents collisions even if phone reuses the same file name/size)
     uid = f"{index}-{file.name}-{getattr(file, 'size', 'na')}"
-    size_key = f"disp_size_{uid}"
-    init_key = f"init_json_{uid}"
+    size_key       = f"disp_size_{uid}"
+    init_key       = f"init_json_{uid}"
+    confirmed_key  = f"confirmed_{uid}"
+    final_joints_k = f"final_joints_{uid}"
+    metrics_key    = f"metrics_{uid}"
+    annot_full_k   = f"annot_full_{uid}"
+    annot_disp_k   = f"annot_disp_{uid}"
 
     # EXIF orientation ONLY (matches phone view)
     img_full = ImageOps.exif_transpose(Image.open(file)).convert("RGB")
     full_w, full_h = img_full.size
 
-    # Compute display size ONCE per image (height-limited ≈ 560 px)
+    # Compute display size ONCE per image (height‑limited ≈ 560 px; width follows)
     if size_key not in st.session_state:
         MAX_H = 560
         scale = min(1.0, MAX_H / float(full_h))
@@ -285,10 +273,10 @@ def process_image(file, label: str, index: int):
     result = model.detect(mp_image_from_pil(img_full))
     if not result.pose_landmarks:
         st.error(f"{label}: Pose not detected.")
-        return None, None, None
+        return False, None, disp_w, None, None
     lmks = result.pose_landmarks[0]
 
-    # Decide which side is closer (z-depth)
+    # Determine close side via depth (z)
     def mean_z(indices):
         vals = [getattr(lmks[i], "z", None) for i in indices]
         vals = [v for v in vals if v is not None]
@@ -296,47 +284,78 @@ def process_image(file, label: str, index: int):
     lz, rz = mean_z(LEFT_LMKS), mean_z(RIGHT_LMKS)
     side = "left" if (np.isfinite(lz) and np.isfinite(rz) and lz < rz) else "right"
 
-    # Joints (full-res) → scale down to display coords ONCE
+    # Seed joints (full‑res → display coords)
     full_joints0 = joints_from_landmarks(lmks, full_w, full_h)
     disp_joints0 = {k: (int(x * scale), int(y * scale)) for k, (x, y) in full_joints0.items()}
 
     st.caption(f"{label}: original {full_w}×{full_h} → canvas {disp_w}×{disp_h} (scale={scale:.3f})")
-    st.markdown("**Drag joints** on the canvas below (whole photo is shown; width is never limited).")
 
     # Build the Fabric JSON ONLY once per image
     if init_key not in st.session_state:
         st.session_state[init_key] = build_canvas_json(img_disp, disp_joints0)
 
-    # Keep the canvas mounted in a stable container to avoid layout reflow
-    canvas_area = st.container()
-    with canvas_area:
-        canvas = st_canvas(
-            fill_color="rgba(0,0,0,0)",
-            stroke_width=0,
-            background_color="rgba(0,0,0,0)",
-            update_streamlit=False,          # anti‑flicker: update on mouse-up only
-            height=disp_h,
-            width=disp_w,
-            drawing_mode="transform",
-            initial_drawing=st.session_state[init_key],
-            display_toolbar=True,
-            key=f"canvas_{uid}",
-        )
+    # Step‑wise control
+    confirmed = st.session_state.get(confirmed_key, False)
 
-    json_data = canvas.json_data or st.session_state[init_key]
-    disp_joints = extract_display_joints(json_data, disp_joints0)
+    if not confirmed:
+        st.markdown("**Drag joints** on the canvas below, then click **Confirm points**.")
 
-    # Map back to full resolution for metric computation & annotation
-    full_joints = {k: (int(x / scale), int(y / scale)) for k, (x, y) in disp_joints.items()}
+        # Stable container + anti-flicker
+        canvas_area = st.container()
+        with canvas_area:
+            canvas = st_canvas(
+                fill_color="rgba(0,0,0,0)",
+                stroke_width=0,
+                background_color="rgba(0,0,0,0)",
+                update_streamlit=False,          # update on mouse-up only
+                height=disp_h,
+                width=disp_w,
+                drawing_mode="transform",
+                initial_drawing=st.session_state[init_key],
+                display_toolbar=True,
+                key=f"canvas_{uid}",
+            )
 
-    metrics = compute_metrics(full_joints, full_w, full_h, side)
-    annot_full = annotate_full(img_full, full_joints, metrics)
+        json_data = canvas.json_data or st.session_state[init_key]
+        disp_joints = extract_display_joints(json_data, disp_joints0)
 
-    # Persist only when there is a new JSON (on drop), to keep the canvas stable
-    if canvas.json_data:
-        st.session_state[init_key] = canvas.json_data
+        # Confirm button
+        if st.button(f"✅ Confirm points for {label}", key=f"confirm_{uid}"):
+            # Map back to full resolution
+            full_joints = {k: (int(x / scale), int(y / scale)) for k, (x, y) in disp_joints.items()}
+            metrics = compute_metrics(full_joints, full_w, full_h, side)
+            annot_full = annotate_full(img_full, full_joints, metrics)
+            annot_disp = annot_full if scale == 1.0 else annot_full.resize((disp_w, disp_h), Image.LANCZOS)
 
-    return annot_full, metrics, side
+            # Persist everything
+            st.session_state[confirmed_key]  = True
+            st.session_state[final_joints_k] = full_joints
+            st.session_state[metrics_key]    = metrics
+            st.session_state[annot_full_k]   = annot_full
+            st.session_state[annot_disp_k]   = annot_disp
+            # Save latest JSON so you can re‑edit from the current positions
+            if canvas.json_data:
+                st.session_state[init_key] = canvas.json_data
+
+            confirmed = True  # update local flag
+    else:
+        # Already confirmed → show the annotated image at the SAME SIZE as the canvas
+        annot_disp = st.session_state.get(annot_disp_k)
+        metrics    = st.session_state.get(metrics_key)
+        if annot_disp is not None:
+            st.markdown("**Confirmed:** Pose drawn & angles calculated. Click **Edit points** to tweak.")
+            # Render annotated at the canvas size (no use_container_width)
+            st.image(np.array(annot_disp), width=disp_w)
+            # Offer Edit button
+            if st.button(f"✏️ Edit points for {label}", key=f"edit_{uid}"):
+                st.session_state[confirmed_key] = False
+                confirmed = False
+
+    # Return current state
+    if st.session_state.get(confirmed_key, False):
+        return True, side, disp_w, st.session_state.get(annot_disp_k), st.session_state.get(metrics_key)
+    else:
+        return False, side, disp_w, None, None
 
 # ──────────────────────────────────────────────────────────────────────────────
 # UI: upload & canvases (tabs → full width per image)
@@ -351,55 +370,67 @@ if files and len(files) > 2:
     st.warning("You uploaded more than two images; using the first two.")
     files = files[:2]
 
-left_pack, right_pack = None, None
+# Hold confirmed packs only
+left_pack   = None  # (annot_disp_img, metrics, disp_w)
+right_pack  = None
 
 if files:
     tab_labels = [f"Image {i+1}" for i in range(len(files))]
     tabs = st.tabs(tab_labels)
     for idx, (t, f) in enumerate(zip(tabs, files), start=1):
         with t:
-            annot, metrics, side = process_image(f, f"Image {idx}", idx)
-            if annot is None:
-                continue
-            if side == "left" and left_pack is None:
-                left_pack = (annot, metrics)
-            elif side == "right" and right_pack is None:
-                right_pack = (annot, metrics)
-            else:
-                st.info(f"Image {idx} also appears to be **{side}-closer**. Capture the opposite side for comparison.")
+            confirmed, side, disp_w, annot_disp, metrics = process_image(f, f"Image {idx}", idx)
+            if confirmed and annot_disp is not None and metrics is not None:
+                if side == "left" and left_pack is None:
+                    left_pack = (annot_disp, metrics, disp_w)
+                elif side == "right" and right_pack is None:
+                    right_pack = (annot_disp, metrics, disp_w)
+                else:
+                    st.info(f"{tab_labels[idx-1]} also appears to be **{side}-closer**. "
+                            f"Capture the opposite side for comparison if needed.")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Results (robust image display; no use_container_width)
+# Results (annotated outputs resized to EXACT same size as the above canvases)
 # ──────────────────────────────────────────────────────────────────────────────
 if left_pack or right_pack:
-    st.header("Results (Annotated Full‑Res Outputs)")
+    st.header("Results (Annotated Pose at Canvas Size)")
 
     r_tabs = st.tabs(["Left Closer", "Right Closer"])
     with r_tabs[0]:
         if left_pack:
-            show_img_safe(left_pack[0], "Left Closer")
+            annot_disp, metrics, disp_w = left_pack
+            st.subheader("Left Closer")
+            st.image(np.array(annot_disp), width=disp_w)  # same size as canvas
         else:
-            st.info("No left-closer image provided.")
+            st.info("No left-closer image confirmed yet.")
+
     with r_tabs[1]:
         if right_pack:
-            show_img_safe(right_pack[0], "Right Closer")
+            annot_disp, metrics, disp_w = right_pack
+            st.subheader("Right Closer")
+            st.image(np.array(annot_disp), width=disp_w)  # same size as canvas
         else:
-            st.info("No right-closer image provided.")
+            st.info("No right-closer image confirmed yet.")
 
+    # Metrics table (only for confirmed images)
     rows = []
-    if left_pack:  rows.append({"Image": "Left closer",  **left_pack[1]})
-    if right_pack: rows.append({"Image": "Right closer", **right_pack[1]})
+    if left_pack:
+        rows.append({"Image": "Left closer",  **left_pack[1]})
+    if right_pack:
+        rows.append({"Image": "Right closer", **right_pack[1]})
     if rows:
-        st.subheader("Metrics")
-        st.dataframe(pd.DataFrame(rows))
+        st.subheader("Metrics (includes Jurdan & HipCheck)")
+        # Order columns for readability
+        cols = ["Image", "close_side", "close_hip_flexion_deg", "far_hip_flexion_deg",
+                "far_knee_extension_deg", "jurdan_angle_deg", "hipcheck_angle_deg"]
+        df = pd.DataFrame(rows)[cols]
+        st.dataframe(df)
 
         if left_pack and right_pack:
             st.subheader("Right − Left (Δ)")
             def d(b, a):
-                if a is None or b is None:
-                    return np.nan
-                if not (np.isfinite(a) and np.isfinite(b)):
-                    return np.nan
+                if a is None or b is None: return np.nan
+                if not (np.isfinite(a) and np.isfinite(b)): return np.nan
                 return float(b - a)
             L, R = left_pack[1], right_pack[1]
             delta = pd.DataFrame([{
@@ -411,4 +442,5 @@ if left_pack or right_pack:
             }])
             st.dataframe(delta)
 
-st.caption("Anti‑flicker enabled (updates on drop). Canvas shows the full photo; width never limited; height ≈ 560 px; EXIF orientation only; no cropping or enhancement.")
+st.caption("Step‑wise flow: adjust → Confirm → stick figure & angles. Canvas is stable (no flicker), width never limited, height ≈ 560 px.")
+``
