@@ -3,6 +3,7 @@ streamlit==1.32.2
 numpy==1.26.4
 pandas==2.2.2
 pillow==10.4.0
+pillow-heif==0.16.0  # HEIC/HEIF support (registers opener for Pillow)
 
 # Computer vision
 opencv-python-headless==4.11.0.86
@@ -11,7 +12,5 @@ opencv-python-headless==4.11.0.86
 mediapipe==0.10.14
 protobuf>=4.25.3,<5
 
-# Drawable canvas — keep the fork that supports `initial_drawing`
+# Drawable canvas — canonical package
 streamlit-drawable-canvas==0.9.3
-
-
