@@ -221,7 +221,7 @@ def create_adjustment_interface(pil_disp, landmarks, width, height, image_key):
             st.rerun()
 
     canvas_result = st_canvas(
-        # NOTE: background is inside initial_drawing, so keep background_image=None
+        background_image=pil_disp,   # PIL Image
         height=height,
         width=width,
         drawing_mode="transform",
