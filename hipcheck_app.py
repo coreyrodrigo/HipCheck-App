@@ -19,18 +19,13 @@ import streamlit as st
 # Wide layout so the canvas can take the full content width
 st.set_page_config(page_title="Pose Comparison", layout="wide")
 
-# Optional OpenCV (not required for this flow)
-try:
-    import cv2  # noqa: F401
-except Exception:
-    pass
-
 import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
 # Drawable canvas
 from streamlit_drawable_canvas import st_canvas
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # App header
@@ -229,10 +224,38 @@ def annotate_full(img_full: Image.Image, full_joints: Dict[str, Tuple[int, int]]
         y += 22
     return out
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Robust st.image for results (avoids Streamlit TypeError)
+# ──────────────────────────────────────────────────────────────────────────────
+def show_img_safe(pil_img, title: str):
+    st.subheader(title)
+    # Try NumPy array first
+    try:
+        st.image(np.array(pil_img), use_container_width=True)
+        return
+    except Exception:
+        pass
+    # Fallback to PNG bytes
+    try:
+        buf = BytesIO()
+        pil_img.save(buf, format="PNG")
+        st.image(buf.getvalue(), use_container_width=True)
+        return
+    except Exception:
+        pass
+    # Final fallback: data URL
+    try:
+        data_url = pil_to_data_url(pil_img)
+        st.markdown(f'<img src="{data_url}" style="width:100%;">', unsafe_allow_html=True)
+    except Exception as e:
+        st.error(f"Could not render image: {e}")
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Core per-image routine (anti‑flicker + stable sizing)
 # ──────────────────────────────────────────────────────────────────────────────
-def process_image(file, label: str):
+def process_image(file, label: str, index: int):
     """
     - Load using EXIF orientation only (matches phone view).
     - DISPLAY SCALE: limit only by height ≈ 560 px; width is never capped by us.
@@ -244,8 +267,8 @@ def process_image(file, label: str):
     if file is None:
         return None, None, None
 
-    # A stable per-file key for session state
-    uid = f"{file.name}-{getattr(file, 'size', 'na')}"
+    # >>> GUARANTEED-UNIQUE ID per upload (prevents collisions when names/sizes match)
+    uid = f"{index}-{file.name}-{getattr(file, 'size', 'na')}"
     size_key = f"disp_size_{uid}"
     init_key = f"init_json_{uid}"
 
@@ -321,8 +344,9 @@ def process_image(file, label: str):
 
     return annot_full, metrics, side
 
+
 # ──────────────────────────────────────────────────────────────────────────────
-# UI: upload & canvases (using tabs so each gets full width)
+# UI: upload & canvases (tabs → full width per image)
 # ──────────────────────────────────────────────────────────────────────────────
 files = st.file_uploader(
     "Upload up to 2 images (JPG/PNG/HEIC). Phone orientation is preserved; canvas height ≈ 560 px.",
@@ -339,9 +363,9 @@ left_pack, right_pack = None, None
 if files:
     tab_labels = [f"Image {i+1}" for i in range(len(files))]
     tabs = st.tabs(tab_labels)
-    for t, f, label in zip(tabs, files, tab_labels):
+    for idx, (t, f) in enumerate(zip(tabs, files), start=1):
         with t:
-            annot, metrics, side = process_image(f, label)
+            annot, metrics, side = process_image(f, f"Image {idx}", idx)
             if annot is None:
                 continue
             if side == "left" and left_pack is None:
@@ -349,35 +373,26 @@ if files:
             elif side == "right" and right_pack is None:
                 right_pack = (annot, metrics)
             else:
-                st.info(f"{label} also appears to be **{side}-closer**. Capture the opposite side for comparison.")
+                st.info(f"Image {idx} also appears to be **{side}-closer**. Capture the opposite side for comparison.")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Results (PNG bytes to avoid Streamlit TypeError)
+# Results (robust image display pipeline)
 # ──────────────────────────────────────────────────────────────────────────────
 if left_pack or right_pack:
     st.header("Results (Annotated Full‑Res Outputs)")
 
-    def show_img(pil_img, title: str):
-        buf = BytesIO()
-        pil_img.save(buf, format="PNG")
-        st.subheader(title)
-        st.image(buf.getvalue(), use_container_width=True)
-
     r_tabs = st.tabs(["Left Closer", "Right Closer"])
-    if left_pack:
-        with r_tabs[0]:
-            show_img(left_pack[0], "Left Closer")
-    else:
-        with r_tabs[0]:
+    with r_tabs[0]:
+        if left_pack:
+            show_img_safe(left_pack[0], "Left Closer")
+        else:
             st.info("No left-closer image provided.")
-    if right_pack:
-        with r_tabs[1]:
-            show_img(right_pack[0], "Right Closer")
-    else:
-        with r_tabs[1]:
+    with r_tabs[1]:
+        if right_pack:
+            show_img_safe(right_pack[0], "Right Closer")
+        else:
             st.info("No right-closer image provided.")
 
-    # Numeric tables
     rows = []
     if left_pack:  rows.append({"Image": "Left closer",  **left_pack[1]})
     if right_pack: rows.append({"Image": "Right closer", **right_pack[1]})
