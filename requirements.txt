@@ -12,4 +12,6 @@ mediapipe==0.10.14
 protobuf>=4.25.3,<5
 
 # Drawable canvas — keep the fork that supports `initial_drawing`
-streamlit-drawable-canvas-fix==0.9.8
+streamlit-drawable-canvas==0.9.3
+
+
