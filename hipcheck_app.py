@@ -36,11 +36,10 @@ from streamlit_drawable_canvas import st_canvas
 # -------------------------------------------------------------------
 st.title("Pose Comparison")
 st.markdown(
-    "This version **displays the full image** (no cropping, no distortion), "
+    "Canvas shows the **full image** (no cropping, no distortion), "
     "scaled to a max **900 px width** for usability and speed. "
     "Images are used **as-is** (no auto-rotation, no enhancement). "
-    "Upload up to **two** photos for the same subject; the app will auto‑assign "
-    "**Left closer** / **Right closer** based on depth."
+    "Upload up to **two** photos; the app auto‑assigns **Left closer** / **Right closer**."
 )
 
 # -------------------------------------------------------------------
@@ -253,17 +252,6 @@ def process_image(file, label: str):
     disp_h = int(full_h * scale)
     img_disp = img_full if scale == 1.0 else img_full.resize((disp_w, disp_h), Image.LANCZOS)
 
-    # Preview via PNG bytes to avoid Streamlit/PIL edge-case TypeErrors
-    buf = BytesIO()
-    img_full.save(buf, format="PNG")
-    st.caption(f"{label}: {full_w}×{full_h} → canvas {disp_w}×{disp_h} (scale={scale:.3f})")
-    st.image(
-        buf.getvalue(),
-        caption=f"{label} (original; the drawable canvas below shows this image scaled to {disp_w}×{disp_h})",
-        use_container_width=False,
-        width=disp_w  # keep the preview compact, matching canvas width
-    )
-
     # Pose detection on the full-resolution image for accuracy
     model = load_pose_model()
     result = model.detect(mp_image_from_pil(img_full))
@@ -285,7 +273,9 @@ def process_image(file, label: str):
     # Scaled display joints
     disp_joints0 = {k: (int(x * scale), int(y * scale)) for k, (x, y) in full_joints0.items()}
 
-    st.markdown(f"### {label} – Drag joints (canvas at {disp_w}×{disp_h}, full image, no cropping)")
+    st.caption(f"{label}: original {full_w}×{full_h} → canvas {disp_w}×{disp_h} (scale={scale:.3f})")
+    st.markdown(f"**{label} – Drag joints** (canvas below shows the entire image, scaled uniformly; no cropping)")
+
     ss_key = f"init_json_{label}_{file.name}"
     if ss_key not in st.session_state:
         st.session_state[ss_key] = build_canvas_json(img_disp, disp_joints0)
