@@ -52,10 +52,7 @@ def mp_image_from_pil(pil_img: Image.Image) -> mp.Image:
     return mp.Image(image_format=mp.ImageFormat.SRGB, data=arr)
 
 def resize_for_canvas(pil_img: Image.Image, max_width: int = 900) -> Image.Image:
-    """
-    Canvas background rendering is much more reliable with smaller images.
-    Keeps aspect ratio; returns RGB.
-    """
+    """Resize for canvas reliability/performance; keep aspect ratio; force RGB."""
     pil_img = pil_img.convert("RGB")
     w, h = pil_img.size
     if w <= max_width:
@@ -93,10 +90,6 @@ def put_text(draw: ImageDraw.ImageDraw, xy, text, font=None, fill=(255, 255, 255
 
 # -------- LIVE METRICS (updates while dragging) --------
 def compute_metrics_live(landmarks, adjustments):
-    """
-    Compute the same metrics as annotate_and_compute, but using adjusted x/y (if present)
-    and original z (for close-side determination).
-    """
     left_avg_z = np.mean([landmarks[i].z for i in LEFT_LMKS])
     right_avg_z = np.mean([landmarks[i].z for i in RIGHT_LMKS])
     close_side = "left" if left_avg_z < right_avg_z else "right"
@@ -141,20 +134,15 @@ def compute_metrics_live(landmarks, adjustments):
 # ---------------- DRAG/DROP + LIVE UI ----------------
 def create_adjustment_interface(pil_disp, landmarks, width, height, image_key):
     """
-    Drag-and-drop joint correction with LIVE-updating angles while dragging.
-    IMPORTANT:
-      - True overlay occurs ONLY inside the canvas using background_image=...
-      - We keep an optional preview in an expander to avoid confusion.
-    Returns adjustments dict in the same format as before.
+    True overlay happens inside the canvas using background_image=pil_disp (PIL Image).
+    We keep an optional preview in an expander to avoid confusion.
     """
     st.markdown(f"#### {image_key} • Drag joints (live angles update)")
-    st.caption("Drag circles ON THE CANVAS IMAGE below. Angles update instantly. Optional: Save current points.")
+    st.caption("Drag circles ON THE CANVAS IMAGE below. Angles update instantly. Optional: Save points.")
 
-    # Optional preview that won't confuse overlay
     with st.expander(f"{image_key} preview (optional)", expanded=False):
         st.image(pil_disp, use_column_width=True)
 
-    # Original pixel positions from MediaPipe (normalized coords * display dims)
     orig_px = {}
     for name, idx in JOINTS.items():
         ox = int(landmarks[idx].x * width)
@@ -170,10 +158,10 @@ def create_adjustment_interface(pil_disp, landmarks, width, height, image_key):
         if name in saved_adj:
             px = int(saved_adj[name]["x"])
             py = int(saved_adj[name]["y"])
-            fill = "rgba(255,140,0,0.85)"  # orange = saved/manual
+            fill = "rgba(255,140,0,0.85)"
         else:
             px, py = orig_px[name]
-            fill = "rgba(0,200,0,0.85)"    # green = AI
+            fill = "rgba(0,200,0,0.85)"
         initial_drawing["objects"].append({
             "type": "circle",
             "left": px - radius,
@@ -193,9 +181,9 @@ def create_adjustment_interface(pil_disp, landmarks, width, height, image_key):
             st.session_state.pop(f"canvas_{image_key}", None)
             st.rerun()
 
-    # ✅ Use numpy array for background_image (more reliable on Streamlit Cloud)
+    # ✅ IMPORTANT: pass PIL Image, NOT numpy array (prevents ValueError truth-value ambiguity)
     canvas_result = st_canvas(
-        background_image=np.array(pil_disp),
+        background_image=pil_disp,
         height=height,
         width=width,
         drawing_mode="transform",
@@ -204,7 +192,7 @@ def create_adjustment_interface(pil_disp, landmarks, width, height, image_key):
         key=f"canvas_{image_key}",
     )
 
-    # Build live adjustments from canvas objects
+    # Build live adjustments
     adjustments_live = {}
     moved_threshold_px = 2
 
@@ -241,7 +229,6 @@ def create_adjustment_interface(pil_disp, landmarks, width, height, image_key):
     with c3:
         def fmt(x):
             return "NA" if (x is None or not np.isfinite(x)) else f"{x:.1f}°"
-
         st.markdown(
             f"""
 **Live angles**
@@ -257,7 +244,6 @@ def create_adjustment_interface(pil_disp, landmarks, width, height, image_key):
     return adjustments_live
 
 def apply_adjustments_to_landmarks(landmarks, adjustments):
-    """Return a new landmark list with overridden normalized x/y for adjusted joints."""
     if not adjustments:
         return landmarks
 
@@ -288,7 +274,6 @@ def apply_adjustments_to_landmarks(landmarks, adjustments):
     return adjusted
 
 def annotate_and_compute(pil_image: Image.Image, landmarks, manual_adjustments=None):
-    """Compute metrics & draw over a copy of the image. Returns (annotated PIL image, metrics dict)."""
     w, h = pil_image.size
     draw = ImageDraw.Draw(pil_image)
     font = ImageFont.load_default()
@@ -336,18 +321,6 @@ def annotate_and_compute(pil_image: Image.Image, landmarks, manual_adjustments=N
         else:
             draw_circle(draw, pos, 8, fill=(220, 0, 0), outline=(255,255,255), outline_width=2)
 
-    panel = [
-        f"Close side: {close_side}",
-        f"Close Hip Flexion: {close_hip_flexion:.1f}°" if np.isfinite(close_hip_flexion) else "Close Hip Flexion: NA",
-        f"Far Hip Flexion: {far_hip_flexion:.1f}°"     if np.isfinite(far_hip_flexion) else "Far Hip Flexion: NA",
-        f"Far Knee Extension: {far_knee_extension:.1f}°" if np.isfinite(far_knee_extension) else "Far Knee Extension: NA",
-        f"Jurdan Angle: {jurdan_angle:.1f}°" if np.isfinite(jurdan_angle) else "Jurdan Angle: NA",
-        f"HipCheck Angle: {hipcheck_angle:.1f}°" if np.isfinite(hipcheck_angle) else "HipCheck Angle: NA",
-    ]
-    x0, y0 = 12, 18
-    for i, line in enumerate(panel):
-        put_text(draw, (x0, y0 + i*20), line, font=font)
-
     metrics = {
         "close_side": close_side,
         "close_hip_flexion_deg": close_hip_flexion,
@@ -368,7 +341,6 @@ def detect_pose_and_optionally_adjust(uploaded_file, image_key: str):
         st.error(f"{image_key}: Could not open image. Please upload a valid PNG/JPG.")
         return None, None
 
-    # Full-res detection (accuracy)
     mp_img = mp_image_from_pil(pil_full)
     model = load_model()
     results = model.detect(mp_img)
@@ -379,12 +351,10 @@ def detect_pose_and_optionally_adjust(uploaded_file, image_key: str):
 
     landmarks = results.pose_landmarks[0]
 
-    # Resized display for canvas overlay (reliable background)
     pil_disp = resize_for_canvas(pil_full, max_width=900)
     w_disp, h_disp = pil_disp.size
 
     adjustments = create_adjustment_interface(pil_disp, landmarks, w_disp, h_disp, image_key)
-
     adjusted_landmarks = apply_adjustments_to_landmarks(landmarks, adjustments)
 
     annotated, metrics = annotate_and_compute(pil_disp.copy(), adjusted_landmarks, adjustments)
