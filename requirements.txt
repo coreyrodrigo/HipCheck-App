@@ -1,12 +1,16 @@
+# Core
 streamlit==1.32.2
 numpy==1.26.4
 pandas==2.2.2
 pillow==10.4.0
-pillow-heif==0.16.0
+pillow-heif==0.16.0  # HEIC/HEIF support (no extra system deps needed)
 
+# Computer vision
 opencv-python-headless==4.11.0.86
 
+# MediaPipe Task API (requires protobuf < 5 for mediapipe 0.10.x)
 mediapipe==0.10.14
 protobuf>=4.25.3,<5
 
+# Drawable canvas
 streamlit-drawable-canvas==0.9.3
