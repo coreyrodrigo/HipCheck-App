@@ -16,7 +16,8 @@ except Exception:
     pass
 
 import streamlit as st
-st.set_page_config(page_title="Pose Comparison", layout="centered")
+# WIDE layout so the canvas can use the full available page width
+st.set_page_config(page_title="Pose Comparison", layout="wide")
 
 # Optional OpenCV (not required for this flow)
 try:
@@ -37,7 +38,7 @@ from streamlit_drawable_canvas import st_canvas
 st.title("Pose Comparison")
 st.markdown(
     "- Canvas shows the **entire image** (no cropping, no distortion).\n"
-    "- **Width is never limited**; we only limit **height to 900 px** for usability.\n"
+    "- **Width is never limited**; we only limit **height to ~560 px** to avoid a super-tall page.\n"
     "- Images are used **as-is from the phone**: we apply **EXIF orientation** only (no enhancement).\n"
     "- Upload up to **two** photos; the app auto‑assigns **Left closer** / **Right closer** from depth."
 )
@@ -220,7 +221,6 @@ def annotate_full(img_full: Image.Image, full_joints: Dict[str, Tuple[int, int]]
     except Exception:
         font = ImageFont.load_default()
     y = 20
-    # Show numeric fields nicely
     order = ["close_side", "close_hip_flexion_deg", "far_hip_flexion_deg",
              "far_knee_extension_deg", "jurdan_angle_deg", "hipcheck_angle_deg"]
     for k in order:
@@ -236,7 +236,7 @@ def annotate_full(img_full: Image.Image, full_joints: Dict[str, Tuple[int, int]]
 def process_image(file, label: str):
     """
     - Load using EXIF orientation to match phone view; no enhancement.
-    - DISPLAY SCALE: only if height > 900 px → scale = 900 / H; width is never capped.
+    - DISPLAY SCALE: only if height > ~560 px → scale = 560 / H; width is never capped by us.
     - Canvas uses the scaled image; joints map back to full-res for metrics & final annotation.
     - Returns (annotated_fullres, metrics, side).
     """
@@ -247,8 +247,8 @@ def process_image(file, label: str):
     img_full = ImageOps.exif_transpose(Image.open(file)).convert("RGB")
     full_w, full_h = img_full.size
 
-    # --- height-based scaling (Option A) ---
-    MAX_H = 900
+    # --- height-based scaling (≈ 560 px cap) ---
+    MAX_H = 560
     scale = min(1.0, MAX_H / float(full_h))
     disp_w = int(full_w * scale)
     disp_h = int(full_h * scale)
@@ -276,7 +276,7 @@ def process_image(file, label: str):
     disp_joints0 = {k: (int(x * scale), int(y * scale)) for k, (x, y) in full_joints0.items()}
 
     st.caption(f"{label}: original {full_w}×{full_h} → canvas {disp_w}×{disp_h} (scale={scale:.3f})")
-    st.markdown("**Drag joints** on the canvas below (whole photo is shown; width never limited).")
+    st.markdown("**Drag joints** on the canvas below (whole photo is shown; width is never limited).")
 
     ss_key = f"init_json_{label}_{file.name}"
     if ss_key not in st.session_state:
@@ -286,7 +286,7 @@ def process_image(file, label: str):
         fill_color="rgba(0,0,0,0)",
         stroke_width=0,
         background_color="rgba(0,0,0,0)",
-        update_streamlit=True,
+        update_streamlit=False,  # <<< anti-flicker: update only on drop, not every drag step
         height=disp_h,
         width=disp_w,
         drawing_mode="transform",
@@ -313,7 +313,7 @@ def process_image(file, label: str):
 # UI: upload & results
 # -------------------------------------------------------------------
 files = st.file_uploader(
-    "Upload up to 2 images (JPG/PNG/HEIC). Phone orientation is preserved; canvas height ≤ 900 px.",
+    "Upload up to 2 images (JPG/PNG/HEIC). Phone orientation is preserved; canvas height ≈ 560 px.",
     type=["jpg", "jpeg", "png", "heic", "HEIC", "heif", "HEIF"],
     accept_multiple_files=True
 )
@@ -342,7 +342,7 @@ if left_pack or right_pack:
     st.header("Results (Annotated Full‑Res Outputs)")
     cols = st.columns(2)
 
-    # Always convert PIL -> PNG bytes before st.image to avoid TypeError
+    # Convert PIL -> PNG bytes before st.image to avoid Streamlit TypeError
     def show_img(col, pil_img, title):
         buf = BytesIO()
         pil_img.save(buf, format="PNG")
@@ -379,4 +379,4 @@ if left_pack or right_pack:
             }])
             st.dataframe(delta, use_container_width=True)
 
-st.caption("Canvas shows the full photo; width is never limited; height ≤ 900 px; EXIF orientation only; no cropping or enhancement.")
+st.caption("Canvas shows the full photo; width is never limited; height ≈ 560 px; EXIF orientation only; no cropping or enhancement.")
