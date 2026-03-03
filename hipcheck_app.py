@@ -364,4 +364,3 @@ if left_pack or right_pack:
         st.dataframe(delta,use_container_width=True)
 
 st.caption("This version uses EXACT original images: no auto-rotation, no enhancement, no cropping.")
-``
