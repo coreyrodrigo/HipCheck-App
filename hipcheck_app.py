@@ -1,17 +1,15 @@
 import streamlit as st
-
 st.set_page_config(page_title="Pose Comparison", layout="centered")
 
+# --- Debug OpenCV import (kept from your original) ---
 import sys, platform
 try:
     import cv2
-    import streamlit as st
     st.info(
         f"OpenCV imported OK • cv2={cv2.__version__} • Python={sys.version.split()[0]} • "
         f"OS={platform.system()} {platform.release()}"
     )
 except Exception as e:
-    import streamlit as st
     st.error(
         "OpenCV failed to import. Ensure `opencv-python-headless` is in requirements.txt "
         "and **not** `opencv-python`/`opencv-contrib-python`. On Streamlit Cloud, also add "
@@ -23,13 +21,13 @@ except Exception as e:
 import numpy as np
 import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
-from datetime import datetime
 import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 import os
 import urllib.request
-from io import BytesIO
+
+from streamlit_drawable_canvas import st_canvas  # ✅ drag/drop overlay
 
 APP_TITLE = "Pose Comparison"
 st.title(APP_TITLE)
@@ -98,82 +96,166 @@ def put_text(draw: ImageDraw.ImageDraw, xy, text, font=None, fill=(255, 255, 255
         draw.text((x+1, y+1), text, font=font, fill=(30, 30, 30))
     draw.text((x, y), text, font=font, fill=fill)
 
+# -------- LIVE METRICS (updates while dragging) --------
+def compute_metrics_live(landmarks, width, height, adjustments):
+    """
+    Compute the same metrics as annotate_and_compute, but using adjusted x/y (if present)
+    and original z (for close-side determination).
+    """
+    left_avg_z = np.mean([landmarks[i].z for i in LEFT_LMKS])
+    right_avg_z = np.mean([landmarks[i].z for i in RIGHT_LMKS])
+    close_side = "left" if left_avg_z < right_avg_z else "right"
+
+    idx_to_name = {idx: name for name, idx in JOINTS.items()}
+
+    def get_xy(idx):
+        name = idx_to_name.get(idx, None)
+        if name and adjustments and name in adjustments:
+            return np.array([adjustments[name]["normalized_x"], adjustments[name]["normalized_y"]], dtype=float)
+        lm = landmarks[idx]
+        return np.array([lm.x, lm.y], dtype=float)
+
+    if close_side == "left":
+        close_hip_angle = calc_angle(get_xy(11), get_xy(23), get_xy(25))
+        far_hip_angle   = calc_angle(get_xy(12), get_xy(24), get_xy(26))
+        far_knee_angle  = calc_angle(get_xy(24), get_xy(26), get_xy(28))
+    else:
+        close_hip_angle = calc_angle(get_xy(12), get_xy(24), get_xy(26))
+        far_hip_angle   = calc_angle(get_xy(11), get_xy(23), get_xy(25))
+        far_knee_angle  = calc_angle(get_xy(23), get_xy(25), get_xy(27))
+
+    close_hip_flexion = 180.0 - close_hip_angle if np.isfinite(close_hip_angle) else np.nan
+    far_hip_flexion   = 180.0 - far_hip_angle   if np.isfinite(far_hip_angle) else np.nan
+    far_knee_extension = (far_knee_angle - 90.0) if np.isfinite(far_knee_angle) else np.nan
+
+    jurdan_angle = (close_hip_flexion + far_knee_extension
+                    if np.isfinite(close_hip_flexion) and np.isfinite(far_knee_extension) else np.nan)
+
+    hipcheck_angle = (jurdan_angle - (90.0 - far_hip_flexion)
+                      if np.isfinite(jurdan_angle) and np.isfinite(far_hip_flexion) else np.nan)
+
+    return {
+        "close_side": close_side,
+        "close_hip_flexion_deg": close_hip_flexion,
+        "far_hip_flexion_deg": far_hip_flexion,
+        "far_knee_extension_deg": far_knee_extension,
+        "jurdan_angle_deg": jurdan_angle,
+        "hipcheck_angle_deg": hipcheck_angle,
+    }
+
+# ---------------- DRAG/DROP + LIVE UI ----------------
 def create_adjustment_interface(pil_image, landmarks, width, height, image_key):
-    """Form UI to optionally adjust joint pixel coordinates; persists to session_state."""
-    # Preview with AI points
-    preview = pil_image.copy()
-    d = ImageDraw.Draw(preview)
-    font = ImageFont.load_default()
+    """
+    Drag-and-drop joint correction with LIVE-updating angles while dragging.
+    Returns adjustments dict (same format as before).
+    """
+    st.markdown(f"#### {image_key} • Drag joints (live angles update)")
+    st.caption("Drag circles. Angles update instantly. Optional: Save current points.")
+
+    # Original pixel positions from MediaPipe
+    orig_px = {}
     for name, idx in JOINTS.items():
-        pos = (int(landmarks[idx].x * width), int(landmarks[idx].y * height))
-        draw_circle(d, pos, 6, fill=(0, 200, 0))
-        put_text(d, (pos[0] + 8, pos[1] - 8), name.replace('_', ' '), font=font)
+        ox = int(landmarks[idx].x * width)
+        oy = int(landmarks[idx].y * height)
+        orig_px[name] = (ox, oy)
 
-    st.image(preview, caption=f"{image_key}: AI Detected Joints (green). Adjust below if needed.", use_container_width=True)
+    joint_names_order = list(JOINTS.keys())
+    saved_adj = st.session_state.get(f"adjustments_{image_key}", {})
 
-    st.markdown(f"#### {image_key} • Manual Joint Position Adjustment")
-    st.caption("Adjust only if a joint is clearly misplaced. Values are in **pixels**.")
-    with st.form(f"adjust_joints_{image_key}"):
-        adjustments = {}
+    radius = 9
+    initial_drawing = {"version": "4.4.0", "objects": []}
+    for name in joint_names_order:
+        if name in saved_adj:
+            px = int(saved_adj[name]["x"])
+            py = int(saved_adj[name]["y"])
+            fill = "rgba(255,140,0,0.85)"  # orange = saved/manual
+        else:
+            px, py = orig_px[name]
+            fill = "rgba(0,200,0,0.85)"    # green = AI
+        initial_drawing["objects"].append({
+            "type": "circle",
+            "left": px - radius,
+            "top": py - radius,
+            "radius": radius,
+            "fill": fill,
+            "stroke": "rgba(255,255,255,0.95)",
+            "strokeWidth": 2,
+            "selectable": True,
+            "name": name,
+        })
 
-        left_exp = st.expander("🔧 Adjust Left Side", expanded=False)
-        with left_exp:
-            for joint_name in ["left_shoulder", "left_hip", "left_knee", "left_ankle", "left_foot"]:
-                idx = JOINTS[joint_name]
-                ox = int(landmarks[idx].x * width)
-                oy = int(landmarks[idx].y * height)
-                st.markdown(f"**{joint_name.replace('_',' ').title()}** _(original: {ox}, {oy})_")
-                c1, c2, c3 = st.columns([2,2,1])
-                with c1:
-                    nx = st.number_input("X", min_value=0, max_value=int(width), value=int(ox),
-                                         key=f"{joint_name}_x_{image_key}")
-                with c2:
-                    ny = st.number_input("Y", min_value=0, max_value=int(height), value=int(oy),
-                                         key=f"{joint_name}_y_{image_key}")
-                with c3:
-                    changed = (nx != ox) or (ny != oy)
-                    st.write("✏️" if changed else "📍")
-                if changed:
-                    adjustments[joint_name] = {
-                        "x": int(nx), "y": int(ny),
-                        "normalized_x": float(nx / width),
-                        "normalized_y": float(ny / height),
-                    }
-
-        right_exp = st.expander("🔧 Adjust Right Side", expanded=False)
-        with right_exp:
-            for joint_name in ["right_shoulder", "right_hip", "right_knee", "right_ankle", "right_foot"]:
-                idx = JOINTS[joint_name]
-                ox = int(landmarks[idx].x * width)
-                oy = int(landmarks[idx].y * height)
-                st.markdown(f"**{joint_name.replace('_',' ').title()}** _(original: {ox}, {oy})_")
-                c1, c2, c3 = st.columns([2,2,1])
-                with c1:
-                    nx = st.number_input("X", min_value=0, max_value=int(width), value=int(ox),
-                                         key=f"{joint_name}_x_{image_key}")
-                with c2:
-                    ny = st.number_input("Y", min_value=0, max_value=int(height), value=int(oy),
-                                         key=f"{joint_name}_y_{image_key}")
-                with c3:
-                    changed = (nx != ox) or (ny != oy)
-                    st.write("✏️" if changed else "📍")
-                if changed:
-                    adjustments[joint_name] = {
-                        "x": int(nx), "y": int(ny),
-                        "normalized_x": float(nx / width),
-                        "normalized_y": float(ny / height),
-                    }
-
-        submitted = st.form_submit_button("🔄 Apply Adjustments & Recalculate", type="primary")
-        if submitted:
-            st.session_state[f"adjustments_{image_key}"] = adjustments
-            if adjustments:
-                st.success(f"Applied {len(adjustments)} joint adjustment(s) for {image_key}.")
-            else:
-                st.info("No adjustments made; using AI predictions.")
+    # Controls row
+    c1, c2, c3 = st.columns([1, 1, 2])
+    with c1:
+        if st.button(f"↩️ Reset ({image_key})", key=f"reset_{image_key}"):
+            st.session_state.pop(f"adjustments_{image_key}", None)
+            st.session_state.pop(f"canvas_{image_key}", None)
             st.rerun()
 
-    return st.session_state.get(f"adjustments_{image_key}", {})
+    # Canvas (drag enabled)
+    canvas_result = st_canvas(
+        background_image=pil_image,
+        height=height,
+        width=width,
+        drawing_mode="transform",
+        update_streamlit=True,
+        initial_drawing=initial_drawing,
+        key=f"canvas_{image_key}",
+    )
+
+    # Build live adjustments from canvas objects
+    adjustments_live = {}
+    moved_threshold_px = 2
+
+    if canvas_result.json_data and "objects" in canvas_result.json_data:
+        objs = canvas_result.json_data["objects"]
+        for i, obj in enumerate(objs):
+            if obj.get("type") != "circle":
+                continue
+            if i >= len(joint_names_order):
+                continue
+
+            name = joint_names_order[i]
+            cx = float(obj["left"] + obj["radius"])
+            cy = float(obj["top"] + obj["radius"])
+
+            ox, oy = orig_px[name]
+            if abs(cx - ox) > moved_threshold_px or abs(cy - oy) > moved_threshold_px:
+                cx = max(0, min(width, cx))
+                cy = max(0, min(height, cy))
+                adjustments_live[name] = {
+                    "x": int(round(cx)),
+                    "y": int(round(cy)),
+                    "normalized_x": float(cx / width),
+                    "normalized_y": float(cy / height),
+                }
+
+    # ✅ LIVE metrics display (updates as you drag)
+    live_metrics = compute_metrics_live(landmarks, width, height, adjustments_live)
+
+    with c2:
+        if st.button(f"💾 Save points ({image_key})", key=f"save_{image_key}"):
+            st.session_state[f"adjustments_{image_key}"] = adjustments_live
+            st.success(f"Saved {len(adjustments_live)} adjusted joint(s).")
+
+    with c3:
+        def fmt(x):
+            return "NA" if (x is None or not np.isfinite(x)) else f"{x:.1f}°"
+
+        st.markdown(
+            f"""
+**Live angles**
+- Close side: `{live_metrics["close_side"]}`
+- Close hip flexion: **{fmt(live_metrics["close_hip_flexion_deg"])}**
+- Far hip flexion: **{fmt(live_metrics["far_hip_flexion_deg"])}**
+- Far knee ext: **{fmt(live_metrics["far_knee_extension_deg"])}**
+- Jurdan: **{fmt(live_metrics["jurdan_angle_deg"])}**
+- HipCheck: **{fmt(live_metrics["hipcheck_angle_deg"])}**
+            """.strip()
+        )
+
+    # Return live adjustments so annotated image + tables update as you drag
+    return adjustments_live
 
 def apply_adjustments_to_landmarks(landmarks, adjustments):
     """Return a new landmark list with overridden normalized x/y for adjusted joints."""
@@ -258,7 +340,6 @@ def annotate_and_compute(pil_image: Image.Image, landmarks, manual_adjustments=N
         else:
             draw_circle(draw, pos, 8, fill=(220, 0, 0), outline=(255,255,255), outline_width=2)
 
-    # metrics panel
     panel = [
         f"Close side: {close_side}",
         f"Close Hip Flexion: {close_hip_flexion:.1f}°" if np.isfinite(close_hip_flexion) else "Close Hip Flexion: NA",
@@ -301,8 +382,10 @@ def detect_pose_and_optionally_adjust(uploaded_file, image_key: str):
         return None, None
 
     landmarks = results.pose_landmarks[0]
-    # UI for adjustments
+
+    # ✅ Drag/drop UI returns live adjustments dict
     adjustments = create_adjustment_interface(pil_img, landmarks, w, h, image_key)
+
     # apply & recompute on a fresh copy for drawing
     adjusted_landmarks = apply_adjustments_to_landmarks(landmarks, adjustments)
     annotated, metrics = annotate_and_compute(pil_img.copy(), adjusted_landmarks, adjustments)
@@ -342,10 +425,11 @@ if annot_a is not None or annot_b is not None:
 
         if metrics_a and metrics_b:
             st.markdown("#### A vs B (B − A)")
-            def d(b,a):
-                if any(x is None for x in (a,b)): return np.nan
+            def d(b, a):
+                if any(x is None for x in (a, b)): return np.nan
                 if not (np.isfinite(a) and np.isfinite(b)): return np.nan
                 return float(b - a)
+
             delta_df = pd.DataFrame([{
                 "Δ close_hip_flexion_deg": d(metrics_b["close_hip_flexion_deg"], metrics_a["close_hip_flexion_deg"]),
                 "Δ far_hip_flexion_deg":   d(metrics_b["far_hip_flexion_deg"],   metrics_a["far_hip_flexion_deg"]),
