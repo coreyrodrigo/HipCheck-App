@@ -443,4 +443,3 @@ if left_pack or right_pack:
             st.dataframe(delta)
 
 st.caption("Step‑wise flow: adjust → Confirm → stick figure & angles. Canvas is stable (no flicker), width never limited, height ≈ 560 px.")
-``
