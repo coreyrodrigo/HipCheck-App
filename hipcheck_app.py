@@ -18,7 +18,7 @@ except Exception:
 import streamlit as st
 st.set_page_config(page_title="Pose Comparison", layout="centered")
 
-# Optional OpenCV (not required for this minimal flow)
+# Optional OpenCV (not required for this flow)
 try:
     import cv2  # noqa: F401
 except Exception:
@@ -36,9 +36,11 @@ from streamlit_drawable_canvas import st_canvas
 # -------------------------------------------------------------------
 st.title("Pose Comparison")
 st.markdown(
-    "This version **displays the full photo** (no cropping, no distortion), "
-    "scaled to a max **900 px width** for speed and usability. "
-    "No auto-rotation and no enhancement are applied. Upload up to **two** images."
+    "This version **displays the full image** (no cropping, no distortion), "
+    "scaled to a max **900 px width** for usability and speed. "
+    "Images are used **as-is** (no auto-rotation, no enhancement). "
+    "Upload up to **two** photos for the same subject; the app will auto‑assign "
+    "**Left closer** / **Right closer** based on depth."
 )
 
 # -------------------------------------------------------------------
@@ -251,10 +253,16 @@ def process_image(file, label: str):
     disp_h = int(full_h * scale)
     img_disp = img_full if scale == 1.0 else img_full.resize((disp_w, disp_h), Image.LANCZOS)
 
-    # Show the image (Streamlit will fit width; we also show exact size in text)
-    st.caption(f"{label}: {full_w}×{full_h} → display {disp_w}×{disp_h} (scale={scale:.3f})")
-    st.image(img_full, caption=f"{label} (original, full image shown below on canvas at {disp_w}×{disp_h})",
-             use_container_width=False)
+    # Preview via PNG bytes to avoid Streamlit/PIL edge-case TypeErrors
+    buf = BytesIO()
+    img_full.save(buf, format="PNG")
+    st.caption(f"{label}: {full_w}×{full_h} → canvas {disp_w}×{disp_h} (scale={scale:.3f})")
+    st.image(
+        buf.getvalue(),
+        caption=f"{label} (original; the drawable canvas below shows this image scaled to {disp_w}×{disp_h})",
+        use_container_width=False,
+        width=disp_w  # keep the preview compact, matching canvas width
+    )
 
     # Pose detection on the full-resolution image for accuracy
     model = load_pose_model()
@@ -277,7 +285,7 @@ def process_image(file, label: str):
     # Scaled display joints
     disp_joints0 = {k: (int(x * scale), int(y * scale)) for k, (x, y) in full_joints0.items()}
 
-    st.markdown(f"### {label} – Drag joints (canvas shown at {disp_w}×{disp_h}, no cropping)")
+    st.markdown(f"### {label} – Drag joints (canvas at {disp_w}×{disp_h}, full image, no cropping)")
     ss_key = f"init_json_{label}_{file.name}"
     if ss_key not in st.session_state:
         st.session_state[ss_key] = build_canvas_json(img_disp, disp_joints0)
@@ -374,4 +382,4 @@ if left_pack or right_pack:
             }])
             st.dataframe(delta, use_container_width=True)
 
-st.caption("Full image is always shown on the canvas (scaled uniformly to ≤900 px width); no cropping; aspect ratio preserved.")
+st.caption("Canvas always shows the entire image (uniform scale to ≤900 px width). No cropping. Aspect ratio preserved.")
