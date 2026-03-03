@@ -1,15 +1,15 @@
+# Core
 streamlit==1.32.2
+numpy==1.26.4
+pandas==2.2.2
+pillow==10.4.0
 
-# Canvas (fork meant to work with newer Streamlit)
-streamlit-drawable-canvas-fix==0.9.8
+# Computer vision
+opencv-python-headless==4.11.0.86
 
-# MediaPipe stack: MUST keep protobuf <5 for mediapipe==0.10.14
+# MediaPipe Task API (protobuf must be <5 for mediapipe 0.10.x)
 mediapipe==0.10.14
 protobuf>=4.25.3,<5
 
-# Numpy pin avoids “random latest” / binary wheel issues on hosted linux
-numpy==1.26.4
-
-pandas==2.2.2
-pillow==10.4.0
-opencv-python-headless==4.11.0.86
+# Drawable canvas — keep the fork that supports `initial_drawing`
+streamlit-drawable-canvas-fix==0.9.8
