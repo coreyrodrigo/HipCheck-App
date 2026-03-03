@@ -1,11 +1,13 @@
 streamlit==1.32.2
 
-# Canvas: use maintained fork (upstream background bugs on Cloud)
+# Canvas (fork meant to work with newer Streamlit)
 streamlit-drawable-canvas-fix==0.9.8
 
-# MediaPipe stack: pin the usual conflict points for Cloud
+# MediaPipe stack: MUST keep protobuf <5 for mediapipe==0.10.14
 mediapipe==0.10.14
 protobuf>=4.25.3,<5
+
+# Numpy pin avoids “random latest” / binary wheel issues on hosted linux
 numpy==1.26.4
 
 pandas==2.2.2
