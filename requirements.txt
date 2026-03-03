@@ -1,7 +1,13 @@
 streamlit==1.32.2
+
+# Canvas: use maintained fork (upstream background bugs on Cloud)
 streamlit-drawable-canvas-fix==0.9.8
+
+# MediaPipe stack: pin the usual conflict points for Cloud
 mediapipe==0.10.14
-numpy
-pandas
-pillow
-opencv-python-headless
+protobuf>=4.25.3,<5
+numpy==1.26.4
+
+pandas==2.2.2
+pillow==10.4.0
+opencv-python-headless==4.11.0.86
