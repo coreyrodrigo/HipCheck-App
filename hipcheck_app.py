@@ -26,7 +26,6 @@ from mediapipe.tasks.python import vision
 # Drawable canvas
 from streamlit_drawable_canvas import st_canvas
 
-
 # ──────────────────────────────────────────────────────────────────────────────
 # App header
 # ──────────────────────────────────────────────────────────────────────────────
@@ -224,33 +223,28 @@ def annotate_full(img_full: Image.Image, full_joints: Dict[str, Tuple[int, int]]
         y += 22
     return out
 
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Robust st.image for results (avoids Streamlit TypeError)
-# ──────────────────────────────────────────────────────────────────────────────
+# Robust results image display that avoids 'use_container_width' issues on your runtime
 def show_img_safe(pil_img, title: str):
     st.subheader(title)
-    # Try NumPy array first
+    # Try NumPy array first (no keywords)
     try:
-        st.image(np.array(pil_img), use_container_width=True)
+        st.image(np.array(pil_img))
         return
     except Exception:
         pass
-    # Fallback to PNG bytes
+    # Fallback to PNG bytes (no keywords)
     try:
         buf = BytesIO()
         pil_img.save(buf, format="PNG")
-        st.image(buf.getvalue(), use_container_width=True)
+        st.image(buf.getvalue())
         return
     except Exception:
         pass
-    # Final fallback: data URL
+    # Final fallback: render via data URL
     try:
-        data_url = pil_to_data_url(pil_img)
-        st.markdown(f'<img src="{data_url}" style="width:100%;">', unsafe_allow_html=True)
+        st.markdown(f'<img src="{pil_to_data_url(pil_img)}" />', unsafe_allow_html=True)
     except Exception as e:
         st.error(f"Could not render image: {e}")
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Core per-image routine (anti‑flicker + stable sizing)
@@ -259,15 +253,15 @@ def process_image(file, label: str, index: int):
     """
     - Load using EXIF orientation only (matches phone view).
     - DISPLAY SCALE: limit only by height ≈ 560 px; width is never capped by us.
-      We compute size and scale ONCE per image and persist in session_state.
-    - Canvas uses the scaled image with update_streamlit=False (no reruns while dragging).
+    - Compute display size and initial Fabric JSON ONCE per image; persist in session_state.
+    - Canvas uses update_streamlit=False (no reruns while dragging).
     - Joints map back to full-res for metrics & final annotation.
     - Returns (annotated_fullres, metrics, side).
     """
     if file is None:
         return None, None, None
 
-    # >>> GUARANTEED-UNIQUE ID per upload (prevents collisions when names/sizes match)
+    # Unique ID per upload (prevents collisions when names/sizes match)
     uid = f"{index}-{file.name}-{getattr(file, 'size', 'na')}"
     size_key = f"disp_size_{uid}"
     init_key = f"init_json_{uid}"
@@ -344,7 +338,6 @@ def process_image(file, label: str, index: int):
 
     return annot_full, metrics, side
 
-
 # ──────────────────────────────────────────────────────────────────────────────
 # UI: upload & canvases (tabs → full width per image)
 # ──────────────────────────────────────────────────────────────────────────────
@@ -376,7 +369,7 @@ if files:
                 st.info(f"Image {idx} also appears to be **{side}-closer**. Capture the opposite side for comparison.")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Results (robust image display pipeline)
+# Results (robust image display; no use_container_width)
 # ──────────────────────────────────────────────────────────────────────────────
 if left_pack or right_pack:
     st.header("Results (Annotated Full‑Res Outputs)")
@@ -398,7 +391,7 @@ if left_pack or right_pack:
     if right_pack: rows.append({"Image": "Right closer", **right_pack[1]})
     if rows:
         st.subheader("Metrics")
-        st.dataframe(pd.DataFrame(rows), use_container_width=True)
+        st.dataframe(pd.DataFrame(rows))
 
         if left_pack and right_pack:
             st.subheader("Right − Left (Δ)")
@@ -416,6 +409,6 @@ if left_pack or right_pack:
                 "Δ jurdan_angle_deg":       d(R["jurdan_angle_deg"],       L["jurdan_angle_deg"]),
                 "Δ hipcheck_angle_deg":     d(R["hipcheck_angle_deg"],     L["hipcheck_angle_deg"]),
             }])
-            st.dataframe(delta, use_container_width=True)
+            st.dataframe(delta)
 
 st.caption("Anti‑flicker enabled (updates on drop). Canvas shows the full photo; width never limited; height ≈ 560 px; EXIF orientation only; no cropping or enhancement.")
