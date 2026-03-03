@@ -6,9 +6,9 @@ from typing import Dict, Tuple, Optional
 
 import numpy as np
 import pandas as pd
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
-# HEIC/HEIF support (no auto-rotation or enhancement)
+# HEIC/HEIF support
 try:
     from pillow_heif import register_heif_opener
     register_heif_opener()
@@ -36,10 +36,10 @@ from streamlit_drawable_canvas import st_canvas
 # -------------------------------------------------------------------
 st.title("Pose Comparison")
 st.markdown(
-    "Canvas shows the **full image** (no cropping, no distortion), "
-    "scaled to a max **900 px width** for usability and speed. "
-    "Images are used **as-is** (no auto-rotation, no enhancement). "
-    "Upload up to **two** photos; the app auto‑assigns **Left closer** / **Right closer**."
+    "- Canvas shows the **entire image** (no cropping, no distortion).\n"
+    "- **Width is never limited**; we only limit **height to 900 px** for usability.\n"
+    "- Images are used **as-is from the phone**: we apply **EXIF orientation** only (no enhancement).\n"
+    "- Upload up to **two** photos; the app auto‑assigns **Left closer** / **Right closer** from depth."
 )
 
 # -------------------------------------------------------------------
@@ -220,8 +220,10 @@ def annotate_full(img_full: Image.Image, full_joints: Dict[str, Tuple[int, int]]
     except Exception:
         font = ImageFont.load_default()
     y = 20
-    for k in ["close_side", "close_hip_flexion_deg", "far_hip_flexion_deg",
-              "far_knee_extension_deg", "jurdan_angle_deg", "hipcheck_angle_deg"]:
+    # Show numeric fields nicely
+    order = ["close_side", "close_hip_flexion_deg", "far_hip_flexion_deg",
+             "far_knee_extension_deg", "jurdan_angle_deg", "hipcheck_angle_deg"]
+    for k in order:
         v = metrics[k]
         text = f"{k}: {v:.1f}" if isinstance(v, float) and np.isfinite(v) else f"{k}: {v}"
         put_text(draw, (20, y), text, font)
@@ -233,21 +235,21 @@ def annotate_full(img_full: Image.Image, full_joints: Dict[str, Tuple[int, int]]
 # -------------------------------------------------------------------
 def process_image(file, label: str):
     """
-    - Load as-is (no EXIF rotation, no enhancement).
-    - Display-scaled to max 900px width (keep aspect; entire image visible).
-    - Canvas runs on scaled image; joints mapped back to full resolution.
+    - Load using EXIF orientation to match phone view; no enhancement.
+    - DISPLAY SCALE: only if height > 900 px → scale = 900 / H; width is never capped.
+    - Canvas uses the scaled image; joints map back to full-res for metrics & final annotation.
     - Returns (annotated_fullres, metrics, side).
     """
     if file is None:
         return None, None, None
 
-    # Load EXACTLY as provided (no EXIF rotate, no enhancement)
-    img_full = Image.open(file).convert("RGB")
+    # EXIF orientation ONLY (matches how your phone shows the image)
+    img_full = ImageOps.exif_transpose(Image.open(file)).convert("RGB")
     full_w, full_h = img_full.size
 
-    # --- display scaling (Option A) ---
-    MAX_W = 900
-    scale = min(1.0, MAX_W / float(full_w))
+    # --- height-based scaling (Option A) ---
+    MAX_H = 900
+    scale = min(1.0, MAX_H / float(full_h))
     disp_w = int(full_w * scale)
     disp_h = int(full_h * scale)
     img_disp = img_full if scale == 1.0 else img_full.resize((disp_w, disp_h), Image.LANCZOS)
@@ -270,11 +272,11 @@ def process_image(file, label: str):
 
     # Full-res joints
     full_joints0 = joints_from_landmarks(lmks, full_w, full_h)
-    # Scaled display joints
+    # Display joints (scaled)
     disp_joints0 = {k: (int(x * scale), int(y * scale)) for k, (x, y) in full_joints0.items()}
 
     st.caption(f"{label}: original {full_w}×{full_h} → canvas {disp_w}×{disp_h} (scale={scale:.3f})")
-    st.markdown(f"**{label} – Drag joints** (canvas below shows the entire image, scaled uniformly; no cropping)")
+    st.markdown("**Drag joints** on the canvas below (whole photo is shown; width never limited).")
 
     ss_key = f"init_json_{label}_{file.name}"
     if ss_key not in st.session_state:
@@ -311,7 +313,7 @@ def process_image(file, label: str):
 # UI: upload & results
 # -------------------------------------------------------------------
 files = st.file_uploader(
-    "Upload up to 2 images (JPG/PNG/HEIC) — images are used as-is; the canvas is scaled to 900 px width max.",
+    "Upload up to 2 images (JPG/PNG/HEIC). Phone orientation is preserved; canvas height ≤ 900 px.",
     type=["jpg", "jpeg", "png", "heic", "HEIC", "heif", "HEIF"],
     accept_multiple_files=True
 )
@@ -339,14 +341,19 @@ if files:
 if left_pack or right_pack:
     st.header("Results (Annotated Full‑Res Outputs)")
     cols = st.columns(2)
+
+    # Always convert PIL -> PNG bytes before st.image to avoid TypeError
+    def show_img(col, pil_img, title):
+        buf = BytesIO()
+        pil_img.save(buf, format="PNG")
+        with col:
+            st.subheader(title)
+            st.image(buf.getvalue(), use_container_width=True)
+
     if left_pack:
-        with cols[0]:
-            st.subheader("Left Closer")
-            st.image(left_pack[0], use_container_width=True)
+        show_img(cols[0], left_pack[0], "Left Closer")
     if right_pack:
-        with cols[1]:
-            st.subheader("Right Closer")
-            st.image(right_pack[0], use_container_width=True)
+        show_img(cols[1], right_pack[0], "Right Closer")
 
     rows = []
     if left_pack:  rows.append({"Image": "Left closer",  **left_pack[1]})
@@ -372,4 +379,4 @@ if left_pack or right_pack:
             }])
             st.dataframe(delta, use_container_width=True)
 
-st.caption("Canvas always shows the entire image (uniform scale to ≤900 px width). No cropping. Aspect ratio preserved.")
+st.caption("Canvas shows the full photo; width is never limited; height ≤ 900 px; EXIF orientation only; no cropping or enhancement.")
