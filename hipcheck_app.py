@@ -4,10 +4,18 @@ import base64
 import urllib.request
 from io import BytesIO
 import platform
+from typing import Dict, Tuple, Optional
 
 import numpy as np
 import pandas as pd
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
+
+# Enable HEIC/HEIF reading seamlessly through Pillow
+try:
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
+except Exception:
+    pass  # If the wheel isn't available locally yet, pip install will provide it
 
 import streamlit as st
 st.set_page_config(page_title="Pose Comparison", layout="centered")
@@ -27,15 +35,12 @@ except Exception as e:
     )
     # Not fatal for this app, so we don't raise
 
-import json
-from typing import Dict, Tuple, Optional
-
 import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
-# Keep using the same import path the fork exposes
-from streamlit_drawable_canvas import st_canvas  # provided by streamlit-drawable-canvas-fix
+# Canvas (canonical package)
+from streamlit_drawable_canvas import st_canvas
 
 APP_TITLE = "Pose Comparison"
 st.title(APP_TITLE)
@@ -113,14 +118,6 @@ def put_text(draw: ImageDraw.ImageDraw, xy: Tuple[int, int], text: str,
         draw.text((x+1, y+1), text, font=font, fill=(30, 30, 30))
     draw.text((x, y), text, font=font, fill=fill)
 
-def resize_for_canvas(pil_img: Image.Image, max_width: int = 900) -> Image.Image:
-    """Resize to a reasonable width for canvas. Keeps aspect ratio."""
-    w, h = pil_img.size
-    if w <= max_width:
-        return pil_img
-    scale = max_width / float(w)
-    return pil_img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
-
 def pil_to_data_url(pil_img: Image.Image) -> str:
     """Convert PIL image to base64 PNG data URL for embedding into Fabric JSON."""
     buff = BytesIO()
@@ -130,15 +127,10 @@ def pil_to_data_url(pil_img: Image.Image) -> str:
 
 def build_initial_drawing_with_embedded_bg(pil_disp: Image.Image, joint_px: Dict[str, Tuple[int, int]],
                                            point_radius: int = 8) -> Dict:
-    """
-    Workaround for Streamlit Cloud background_image bugs:
-    - Embed the image as a Fabric 'image' object (locked) as the first object.
-    - Add draggable joint circles on top.
-    """
+    """Embed the image as a Fabric 'image' object (locked) as the first object, then draggable joint circles."""
     w, h = pil_disp.size
     data_url = pil_to_data_url(pil_disp)
 
-    # Fabric image object (locked, non-selectable)
     bg_obj = {
         "type": "image",
         "version": "5.2.4",
@@ -165,7 +157,6 @@ def build_initial_drawing_with_embedded_bg(pil_disp: Image.Image, joint_px: Dict
         "crossOrigin": "anonymous",
     }
 
-    # Draggable circles for joints
     circles = []
     for name, (x, y) in joint_px.items():
         circles.append({
@@ -183,7 +174,6 @@ def build_initial_drawing_with_embedded_bg(pil_disp: Image.Image, joint_px: Dict
             "lockScalingX": True,
             "lockScalingY": True,
             "lockRotation": True,
-            # store joint id in object so we can read it back
             "name": name,
             "originX": "center",
             "originY": "center",
@@ -199,9 +189,8 @@ def extract_joint_px_from_canvas(json_data: Dict, fallback_joint_px: Dict[str, T
     out = dict(fallback_joint_px)
     for obj in json_data.get("objects", []):
         if obj.get("type") == "circle" and obj.get("name") in out:
-            # circles are centered due to originX/Y = center
             left = obj.get("left")
-            top = obj.get("top")
+            top  = obj.get("top")
             if left is not None and top is not None:
                 out[obj["name"]] = (int(float(left)), int(float(top)))
     return out
@@ -210,7 +199,10 @@ def joints_px_from_landmarks(landmarks, w: int, h: int):
     d = {}
     for name, idx in JOINTS.items():
         lm = landmarks[idx]
-        d[name] = (int(lm.x * w), int(lm.y * h))
+        # Clamp to bounds for occasional tiny off-image values
+        x = int(np.clip(lm.x * w, 0, w - 1))
+        y = int(np.clip(lm.y * h, 0, h - 1))
+        d[name] = (x, y)
     return d
 
 def normalized_from_px(px: Tuple[int, int], w: int, h: int) -> np.ndarray:
@@ -249,6 +241,59 @@ def compute_metrics_from_joint_px(joint_px: Dict[str, Tuple[int, int]], w: int, 
         "jurdan_angle_deg": jurdan_angle,
         "hipcheck_angle_deg": hipcheck_angle,
     }
+
+# ---------------- front-end photo processing ----------------
+def auto_enhance_pil(image: Image.Image) -> Image.Image:
+    """
+    Optional: mild CLAHE contrast + light denoise to help keypoints pop.
+    Works on RGB, returns RGB.
+    """
+    try:
+        import cv2
+        arr = np.array(image)
+        bgr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+        # CLAHE on L channel (LAB)
+        lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        cl = clahe.apply(l)
+        lab2 = cv2.merge([cl, a, b])
+        bgr2 = cv2.cvtColor(lab2, cv2.COLOR_LAB2BGR)
+        # mild denoise
+        bgr2 = cv2.fastNlMeansDenoisingColored(bgr2, None, h=3, hColor=3,
+                                               templateWindowSize=7, searchWindowSize=21)
+        rgb2 = cv2.cvtColor(bgr2, cv2.COLOR_BGR2RGB)
+        return Image.fromarray(rgb2)
+    except Exception:
+        # If OpenCV not available or anything fails, return original
+        return image
+
+def load_and_preprocess(uploaded_file, enhance: bool, rotation_state_key: str) -> Image.Image:
+    """
+    Read an uploaded image (JPG/PNG/HEIC), fix EXIF orientation, optionally enhance, and apply manual rotation.
+    """
+    # Open with Pillow (HEIC is supported if pillow-heif opener is registered)
+    img = Image.open(uploaded_file)
+    # EXIF orientation fix so portrait stays upright
+    img = ImageOps.exif_transpose(img).convert("RGB")
+
+    # Optional enhancement
+    if enhance:
+        img = auto_enhance_pil(img)
+
+    # Manual rotation controls
+    with st.columns([1, 1, 1], vertical_alignment="center") as cols:
+        rot_left  = cols[0].button("⟲ Rotate −90°", key=rotation_state_key + "_l")
+        rot_180   = cols[1].button("⤾ Rotate 180°", key=rotation_state_key + "_180")
+        rot_right = cols[2].button("⟳ Rotate +90°", key=rotation_state_key + "_r")
+    if rot_left:
+        img = img.rotate(90, expand=True)
+    if rot_right:
+        img = img.rotate(-90, expand=True)
+    if rot_180:
+        img = img.rotate(180, expand=True)
+
+    return img
 
 def annotate_with_joints(pil_img: Image.Image, joint_px: Dict[str, Tuple[int, int]], metrics: Dict[str, float]):
     """Draw skeleton + joints + metrics on a copy."""
@@ -290,34 +335,33 @@ def annotate_with_joints(pil_img: Image.Image, joint_px: Dict[str, Tuple[int, in
 
     return out
 
-def detect_pose_and_drag_adjust(uploaded_file, image_key: str):
+def process_one_image(uploaded_file, image_key_hint: str, enhance_toggle_key: str):
+    """
+    Load (with HEIC support & EXIF orientation), optional auto-enhance,
+    detect pose, build FULL‑RES canvas (no crop), and return (annotated, metrics, close_side).
+    """
     if uploaded_file is None:
-        return None, None
+        return None, None, None
 
-    # Reset canvas state when a new file is uploaded
-    last_key = f"last_file_{image_key}"
-    if st.session_state.get(last_key) != uploaded_file.name:
-        st.session_state.pop(f"init_drawing_{image_key}", None)
-        st.session_state[last_key] = uploaded_file.name
+    file_id = f"{uploaded_file.name}-{getattr(uploaded_file, 'size', 'NA')}"
+    rotation_state_key = f"rot_{image_key_hint}_{file_id}"
 
-    try:
-        pil_full = Image.open(uploaded_file).convert("RGB")
-    except Exception:
-        st.error(f"{image_key}: Could not open image. Please upload a valid PNG/JPG.")
-        return None, None
+    # --- front-end processing ---
+    enhance = st.toggle("Auto‑enhance (contrast + light denoise)", key=enhance_toggle_key, value=True)
+    pil_full = load_and_preprocess(uploaded_file, enhance, rotation_state_key)
 
-    # --- preview (not the editable canvas) ---
-    st.image(pil_full, caption=f"{image_key} preview", use_column_width=True)
+    # Preview (Streamlit scales for display only)
+    st.image(pil_full, caption=f"{image_key_hint} preview (processed)", use_column_width=True)
 
-    # --- detect pose on full res ---
+    # Detect pose on processed full‑res image
     model = load_model()
     results = model.detect(mp_image_from_pil(pil_full))
     if not results.pose_landmarks:
-        st.error(f"{image_key}: No pose detected. Try a clearer side-view photo.")
-        return None, None
+        st.error(f"{image_key_hint}: No pose detected. Try clearer side-view, better lighting, or rotate.")
+        return None, None, None
     landmarks = results.pose_landmarks[0]
 
-    # --- choose close side from z (robust) ---
+    # Determine which side is closer using z (robust)
     def safe_mean_z(landmarks, idxs):
         vals = [getattr(landmarks[i], "z", None) for i in idxs]
         vals = [v for v in vals if v is not None]
@@ -325,57 +369,50 @@ def detect_pose_and_drag_adjust(uploaded_file, image_key: str):
 
     left_avg_z  = safe_mean_z(landmarks, LEFT_LMKS)
     right_avg_z = safe_mean_z(landmarks, RIGHT_LMKS)
-
     if np.isnan(left_avg_z) or np.isnan(right_avg_z):
         close_side_hint = "left"
     else:
-        # In MediaPipe: smaller (often negative) z means closer to camera
+        # Smaller (often negative) z is closer to camera
         close_side_hint = "left" if left_avg_z < right_avg_z else "right"
 
-    # --- display-size image for editing canvas (keeps interaction snappy) ---
-    pil_disp = resize_for_canvas(pil_full, max_width=900)
+    # FULL‑RES canvas (no resizing/cropping)
+    pil_disp = pil_full
     w_disp, h_disp = pil_disp.size
 
-    # initial joint points in display coordinates
     joint_px0 = joints_px_from_landmarks(landmarks, w_disp, h_disp)
 
-    st.markdown(f"### {image_key} • Drag the joint dots (live-updating angles)")
+    st.markdown(f"### {image_key_hint} • Drag the joint dots (live-updating angles)")
 
-    # Build/stash initial Fabric JSON (bg image + circles)
-    init_key = f"init_drawing_{image_key}"
+    init_key = f"init_drawing_{image_key_hint}_{file_id}"
     if init_key not in st.session_state:
         st.session_state[init_key] = build_initial_drawing_with_embedded_bg(
             pil_disp, joint_px0, point_radius=8
         )
 
-    # Canvas
     canvas_result = st_canvas(
         fill_color="rgba(0,0,0,0)",
         stroke_width=0,
         stroke_color="rgba(0,0,0,0)",
-        background_color="rgba(0,0,0,0)",   # transparent (image is an object)
-        background_image=None,              # DO NOT USE on Streamlit Cloud
-        update_streamlit=True,              # live updates while dragging
+        background_color="rgba(0,0,0,0)",
+        background_image=None,          # We embed image as first Fabric object
+        update_streamlit=True,
         height=h_disp,
         width=w_disp,
-        drawing_mode="transform",           # allows dragging objects
+        drawing_mode="transform",
         initial_drawing=st.session_state[init_key],
         display_toolbar=True,
         point_display_radius=0,
-        key=f"canvas_{image_key}",
+        key=f"canvas_{image_key_hint}_{file_id}",
     )
 
-    # Read current positions (json_data may be None mid-drag; fallback to last init)
     json_data = canvas_result.json_data or st.session_state[init_key]
     joint_px = extract_joint_px_from_canvas(json_data, joint_px0)
 
-    # Compute metrics live
     metrics = compute_metrics_from_joint_px(joint_px, w_disp, h_disp, close_side_hint=close_side_hint)
 
-    # Show live values
+    # Live values
     def fmt(x: float) -> str:
         return f"{x:.1f}°" if (x is not None and np.isfinite(x)) else "NA"
-
     st.markdown(
         f"""
 **Live angles (drag updates immediately):**
@@ -387,42 +424,70 @@ def detect_pose_and_drag_adjust(uploaded_file, image_key: str):
         """
     )
 
-    # Create annotated image for "Results"
     annot = annotate_with_joints(pil_disp, joint_px, metrics)
 
-    # Persist the canvas JSON only when present
     if canvas_result.json_data:
         st.session_state[init_key] = canvas_result.json_data
 
-    return annot, metrics
+    return annot, metrics, metrics.get("close_side", close_side_hint)
 
 # ---------------- UI ----------------
 st.markdown(
-    "Upload two side-view photos to compare. Clear lighting and full lower-limb visibility improves results."
+    "Upload up to **two** side‑view photos for the **same subject** lying on a table. "
+    "The app auto‑orients (EXIF), can auto‑enhance visibility, and will auto‑assign each to "
+    "**Left closer** or **Right closer** based on camera proximity."
 )
 
-c1, c2 = st.columns(2)
-with c1:
-    file_a = st.file_uploader("📷 Image A", type=["jpg", "jpeg", "png"], key="upload_A")
-with c2:
-    file_b = st.file_uploader("📷 Image B", type=["jpg", "jpeg", "png"], key="upload_B")
+files = st.file_uploader(
+    "📷 Upload up to 2 images (JPG/PNG/HEIC)",
+    type=["jpg", "jpeg", "png", "heic", "HEIC", "heif", "HEIF"],
+    accept_multiple_files=True
+)
 
-annot_a, metrics_a = detect_pose_and_drag_adjust(file_a, "A")
-annot_b, metrics_b = detect_pose_and_drag_adjust(file_b, "B")
+# Take first two if more provided
+if files and len(files) > 2:
+    st.warning("You uploaded more than two images; using the first two.")
+    files = files[:2]
 
-if annot_a is not None or annot_b is not None:
+left_pack  = None
+right_pack = None
+
+if files:
+    for idx, f in enumerate(files, start=1):
+        with st.container(border=True):
+            annot, metrics, side = process_one_image(
+                f,
+                image_key_hint=f"Image {idx}",
+                enhance_toggle_key=f"enh_{idx}"
+            )
+            if annot is None:
+                continue
+            if side == "left" and left_pack is None:
+                left_pack = (annot, metrics)
+            elif side == "right" and right_pack is None:
+                right_pack = (annot, metrics)
+            else:
+                st.info(
+                    f"This image also appears to be **{side} closer**. "
+                    f"Capture the opposite side for a full comparison if needed."
+                )
+
+# --------- Results section ---------
+if left_pack or right_pack:
     st.markdown("## Results (annotated overlays)")
     cols = st.columns(2)
-    if annot_a is not None:
+    if left_pack:
         with cols[0]:
-            st.image(annot_a, caption="A • Annotated", use_column_width=True)
-    if annot_b is not None:
+            st.subheader("Left closer")
+            st.image(left_pack[0], use_column_width=True)
+    if right_pack:
         with cols[1]:
-            st.image(annot_b, caption="B • Annotated", use_column_width=True)
+            st.subheader("Right closer")
+            st.image(right_pack[0], use_column_width=True)
 
     rows = []
-    if metrics_a: rows.append({"Image": "A", **metrics_a})
-    if metrics_b: rows.append({"Image": "B", **metrics_b})
+    if left_pack:  rows.append({"Image": "Left closer",  **left_pack[1]})
+    if right_pack: rows.append({"Image": "Right closer", **right_pack[1]})
 
     if rows:
         df = pd.DataFrame(rows)[
@@ -431,26 +496,25 @@ if annot_a is not None or annot_b is not None:
         ]
         st.dataframe(df, use_container_width=True)
 
-        if metrics_a and metrics_b:
-            st.markdown("### A vs B (B − A)")
-
+        if left_pack and right_pack:
+            st.markdown("### Right − Left (Δ)")
             def d(b, a):
                 if a is None or b is None:
                     return np.nan
                 if not (np.isfinite(a) and np.isfinite(b)):
                     return np.nan
                 return float(b - a)
-
             delta_df = pd.DataFrame([{
-                "Δ close_hip_flexion_deg": d(metrics_b["close_hip_flexion_deg"], metrics_a["close_hip_flexion_deg"]),
-                "Δ far_hip_flexion_deg":   d(metrics_b["far_hip_flexion_deg"],   metrics_a["far_hip_flexion_deg"]),
-                "Δ far_knee_extension_deg":d(metrics_b["far_knee_extension_deg"],metrics_a["far_knee_extension_deg"]),
-                "Δ jurdan_angle_deg":      d(metrics_b["jurdan_angle_deg"],      metrics_a["jurdan_angle_deg"]),
-                "Δ hipcheck_angle_deg":    d(metrics_b["hipcheck_angle_deg"],    metrics_a["hipcheck_angle_deg"]),
+                "Δ close_hip_flexion_deg":  d(right_pack[1]["close_hip_flexion_deg"],  left_pack[1]["close_hip_flexion_deg"]),
+                "Δ far_hip_flexion_deg":    d(right_pack[1]["far_hip_flexion_deg"],   left_pack[1]["far_hip_flexion_deg"]),
+                "Δ far_knee_extension_deg": d(right_pack[1]["far_knee_extension_deg"], left_pack[1]["far_knee_extension_deg"]),
+                "Δ jurdan_angle_deg":       d(right_pack[1]["jurdan_angle_deg"],       left_pack[1]["jurdan_angle_deg"]),
+                "Δ hipcheck_angle_deg":     d(right_pack[1]["hipcheck_angle_deg"],     left_pack[1]["hipcheck_angle_deg"]),
             }])
             st.dataframe(delta_df, use_container_width=True)
 
 st.caption(
-    "Angles are computed from 2D landmarks; camera angle, occlusion, and clothing can affect accuracy. "
+    "Assumes subject is lying on a table. Images are orientation‑corrected using EXIF; "
+    "optional auto‑enhance improves contrast/visibility. "
     "Drag the points to correct them; angles update live."
 )
