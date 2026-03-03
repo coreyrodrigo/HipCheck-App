@@ -1,23 +1,6 @@
 import streamlit as st
 st.set_page_config(page_title="Pose Comparison", layout="centered")
 
-# --- Debug OpenCV import (kept from your original) ---
-import sys, platform
-try:
-    import cv2
-    st.info(
-        f"OpenCV imported OK • cv2={cv2.__version__} • Python={sys.version.split()[0]} • "
-        f"OS={platform.system()} {platform.release()}"
-    )
-except Exception as e:
-    st.error(
-        "OpenCV failed to import. Ensure `opencv-python-headless` is in requirements.txt "
-        "and **not** `opencv-python`/`opencv-contrib-python`. On Streamlit Cloud, also add "
-        "`libglib2.0-0` and `libgl1` to `packages.txt`.\n\n"
-        f"Error: {e}"
-    )
-    raise
-
 import numpy as np
 import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
@@ -27,12 +10,12 @@ from mediapipe.tasks.python import vision
 import os
 import urllib.request
 
-from streamlit_drawable_canvas import st_canvas  # ✅ drag/drop overlay
+from streamlit_drawable_canvas import st_canvas
 
 APP_TITLE = "Pose Comparison"
 st.title(APP_TITLE)
 
-# -------- Model download path (no __file__ dependency for Streamlit) --------
+# -------------------- MODEL SETUP --------------------
 MODEL_PATH = os.path.join(os.getcwd(), "pose_landmarker_full.task")
 MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
@@ -48,7 +31,6 @@ def load_model():
     base_options = python.BaseOptions(model_asset_path=MODEL_PATH)
     options = vision.PoseLandmarkerOptions(
         base_options=base_options,
-        output_segmentation_masks=True,
         running_mode=vision.RunningMode.IMAGE
     )
     return vision.PoseLandmarker.create_from_options(options)
@@ -64,13 +46,26 @@ JOINTS = {
 LEFT_LMKS  = [11, 23, 25, 27, 31]
 RIGHT_LMKS = [12, 24, 26, 28, 32]
 
+# -------------------- HELPERS --------------------
 def mp_image_from_pil(pil_img: Image.Image) -> mp.Image:
-    """Create a MediaPipe Image from a PIL RGB image (no temp files, no cv2)."""
-    arr = np.asarray(pil_img)  # shape (H, W, 3), uint8, RGB
+    arr = np.asarray(pil_img)  # RGB uint8
     return mp.Image(image_format=mp.ImageFormat.SRGB, data=arr)
 
+def resize_for_canvas(pil_img: Image.Image, max_width: int = 900) -> Image.Image:
+    """
+    Canvas background rendering is much more reliable with smaller images.
+    Keeps aspect ratio; returns RGB.
+    """
+    pil_img = pil_img.convert("RGB")
+    w, h = pil_img.size
+    if w <= max_width:
+        return pil_img
+    scale = max_width / float(w)
+    new_w = int(w * scale)
+    new_h = int(h * scale)
+    return pil_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+
 def calc_angle(a, b, c):
-    """Angle at point b (degrees) with points given as np.array([x, y])."""
     ba = a - b
     bc = c - b
     denom = np.linalg.norm(ba) * np.linalg.norm(bc)
@@ -97,7 +92,7 @@ def put_text(draw: ImageDraw.ImageDraw, xy, text, font=None, fill=(255, 255, 255
     draw.text((x, y), text, font=font, fill=fill)
 
 # -------- LIVE METRICS (updates while dragging) --------
-def compute_metrics_live(landmarks, width, height, adjustments):
+def compute_metrics_live(landmarks, adjustments):
     """
     Compute the same metrics as annotate_and_compute, but using adjusted x/y (if present)
     and original z (for close-side determination).
@@ -144,15 +139,16 @@ def compute_metrics_live(landmarks, width, height, adjustments):
     }
 
 # ---------------- DRAG/DROP + LIVE UI ----------------
-def create_adjustment_interface(pil_image, landmarks, width, height, image_key):
+def create_adjustment_interface(pil_disp, landmarks, width, height, image_key):
     """
     Drag-and-drop joint correction with LIVE-updating angles while dragging.
-    Returns adjustments dict (same format as before).
+    Uses a resized display image (pil_disp) so background is reliable on Streamlit Cloud.
+    Returns adjustments dict in the same format as before.
     """
     st.markdown(f"#### {image_key} • Drag joints (live angles update)")
-    st.caption("Drag circles. Angles update instantly. Optional: Save current points.")
+    st.caption("Drag circles on the photo. Angles update instantly. Optional: Save current points.")
 
-    # Original pixel positions from MediaPipe
+    # Original pixel positions from MediaPipe (normalized coords * display dims)
     orig_px = {}
     for name, idx in JOINTS.items():
         ox = int(landmarks[idx].x * width)
@@ -184,7 +180,6 @@ def create_adjustment_interface(pil_image, landmarks, width, height, image_key):
             "name": name,
         })
 
-    # Controls row
     c1, c2, c3 = st.columns([1, 1, 2])
     with c1:
         if st.button(f"↩️ Reset ({image_key})", key=f"reset_{image_key}"):
@@ -192,9 +187,11 @@ def create_adjustment_interface(pil_image, landmarks, width, height, image_key):
             st.session_state.pop(f"canvas_{image_key}", None)
             st.rerun()
 
-    # Canvas (drag enabled)
+    # Always show a normal preview (guarantees you can see the JPEG)
+    st.image(pil_disp, caption=f"{image_key} preview", use_column_width=True)
+
     canvas_result = st_canvas(
-        background_image=pil_image,
+        background_image=pil_disp,
         height=height,
         width=width,
         drawing_mode="transform",
@@ -220,6 +217,7 @@ def create_adjustment_interface(pil_image, landmarks, width, height, image_key):
             cy = float(obj["top"] + obj["radius"])
 
             ox, oy = orig_px[name]
+            # only count as "manual" if moved (but we still return all points downstream)
             if abs(cx - ox) > moved_threshold_px or abs(cy - oy) > moved_threshold_px:
                 cx = max(0, min(width, cx))
                 cy = max(0, min(height, cy))
@@ -231,7 +229,7 @@ def create_adjustment_interface(pil_image, landmarks, width, height, image_key):
                 }
 
     # ✅ LIVE metrics display (updates as you drag)
-    live_metrics = compute_metrics_live(landmarks, width, height, adjustments_live)
+    live_metrics = compute_metrics_live(landmarks, adjustments_live)
 
     with c2:
         if st.button(f"💾 Save points ({image_key})", key=f"save_{image_key}"):
@@ -302,7 +300,6 @@ def annotate_and_compute(pil_image: Image.Image, landmarks, manual_adjustments=N
         lm = landmarks[idx]
         return np.array([lm.x, lm.y], dtype=float)
 
-    # determine close side by average z (smaller z ~ closer)
     left_avg_z = np.mean([landmarks[i].z for i in LEFT_LMKS])
     right_avg_z = np.mean([landmarks[i].z for i in RIGHT_LMKS])
     close_side = "left" if left_avg_z < right_avg_z else "right"
@@ -363,17 +360,18 @@ def annotate_and_compute(pil_image: Image.Image, landmarks, manual_adjustments=N
     return pil_image, metrics
 
 def detect_pose_and_optionally_adjust(uploaded_file, image_key: str):
-    """Full pipeline for one image using only PIL + MediaPipe."""
+    """Full pipeline for one image using PIL + MediaPipe + drag/drop canvas."""
     if uploaded_file is None:
         return None, None
+
     try:
-        pil_img = Image.open(uploaded_file).convert("RGB")
+        pil_full = Image.open(uploaded_file).convert("RGB")
     except Exception:
         st.error(f"{image_key}: Could not open image. Please upload a valid PNG/JPG.")
         return None, None
 
-    w, h = pil_img.size
-    mp_img = mp_image_from_pil(pil_img)
+    # Use full-res for detection (accuracy)
+    mp_img = mp_image_from_pil(pil_full)
     model = load_model()
     results = model.detect(mp_img)
 
@@ -383,12 +381,17 @@ def detect_pose_and_optionally_adjust(uploaded_file, image_key: str):
 
     landmarks = results.pose_landmarks[0]
 
-    # ✅ Drag/drop UI returns live adjustments dict
-    adjustments = create_adjustment_interface(pil_img, landmarks, w, h, image_key)
+    # Use resized image for canvas display (reliable background)
+    pil_disp = resize_for_canvas(pil_full, max_width=900)
+    w_disp, h_disp = pil_disp.size
 
-    # apply & recompute on a fresh copy for drawing
+    adjustments = create_adjustment_interface(pil_disp, landmarks, w_disp, h_disp, image_key)
+
+    # Apply adjusted normalized coords
     adjusted_landmarks = apply_adjustments_to_landmarks(landmarks, adjustments)
-    annotated, metrics = annotate_and_compute(pil_img.copy(), adjusted_landmarks, adjustments)
+
+    # Annotate on display image (so it matches what you're dragging)
+    annotated, metrics = annotate_and_compute(pil_disp.copy(), adjusted_landmarks, adjustments)
     return annotated, metrics
 
 # ---------------- UI ----------------
@@ -408,10 +411,10 @@ if annot_a is not None or annot_b is not None:
     cols = st.columns(2)
     if annot_a is not None:
         with cols[0]:
-            st.image(annot_a, caption="A • Annotated", use_container_width=True)
+            st.image(annot_a, caption="A • Annotated", use_column_width=True)
     if annot_b is not None:
         with cols[1]:
-            st.image(annot_b, caption="B • Annotated", use_container_width=True)
+            st.image(annot_b, caption="B • Annotated", use_column_width=True)
 
     rows = []
     if metrics_a: rows.append({"Image": "A", **metrics_a})
@@ -441,5 +444,5 @@ if annot_a is not None or annot_b is not None:
 
 st.caption(
     "Angles are computed from 2D landmarks; camera angle, occlusion, and clothing can affect accuracy. "
-    "Manual joint correction overrides only the selected points (normalized to image size)."
+    "Manual joint correction overrides only the moved points (normalized to display image size)."
 )
