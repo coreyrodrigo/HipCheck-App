@@ -1,6 +1,8 @@
 import streamlit as st
 st.set_page_config(page_title="Pose Comparison", layout="centered")
 
+import base64
+from io import BytesIO
 import numpy as np
 import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
@@ -61,6 +63,13 @@ def resize_for_canvas(pil_img: Image.Image, max_width: int = 900) -> Image.Image
     new_w = int(w * scale)
     new_h = int(h * scale)
     return pil_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+
+def pil_to_data_url(pil_img: Image.Image) -> str:
+    """Convert PIL image to a PNG data URL (for Fabric.js image object)."""
+    buf = BytesIO()
+    pil_img.save(buf, format="PNG")
+    b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+    return f"data:image/png;base64,{b64}"
 
 def calc_angle(a, b, c):
     ba = a - b
@@ -134,15 +143,19 @@ def compute_metrics_live(landmarks, adjustments):
 # ---------------- DRAG/DROP + LIVE UI ----------------
 def create_adjustment_interface(pil_disp, landmarks, width, height, image_key):
     """
-    True overlay happens inside the canvas using background_image=pil_disp (PIL Image).
-    We keep an optional preview in an expander to avoid confusion.
+    FIXED OVERLAY:
+    - We embed the photo as a Fabric.js image object inside initial_drawing.
+    - Then we add draggable circles on top.
+    This avoids streamlit-drawable-canvas background_image rendering issues.
     """
     st.markdown(f"#### {image_key} • Drag joints (live angles update)")
-    st.caption("Drag circles ON THE CANVAS IMAGE below. Angles update instantly. Optional: Save points.")
+    st.caption("Drag circles directly on the image below. Angles update instantly.")
 
+    # Optional preview (won't confuse overlay)
     with st.expander(f"{image_key} preview (optional)", expanded=False):
         st.image(pil_disp, use_column_width=True)
 
+    # Original pixel positions from MediaPipe (normalized coords * display dims)
     orig_px = {}
     for name, idx in JOINTS.items():
         ox = int(landmarks[idx].x * width)
@@ -153,15 +166,41 @@ def create_adjustment_interface(pil_disp, landmarks, width, height, image_key):
     saved_adj = st.session_state.get(f"adjustments_{image_key}", {})
 
     radius = 9
-    initial_drawing = {"version": "4.4.0", "objects": []}
+
+    # Build initial_drawing with FIRST object = locked background image
+    img_url = pil_to_data_url(pil_disp)
+    initial_drawing = {
+        "version": "4.4.0",
+        "objects": [
+            {
+                "type": "image",
+                "left": 0,
+                "top": 0,
+                "width": width,
+                "height": height,
+                "scaleX": 1,
+                "scaleY": 1,
+                "src": img_url,
+                "selectable": False,
+                "evented": False,
+                "hasControls": False,
+                "hasBorders": False,
+                "lockMovementX": True,
+                "lockMovementY": True,
+            }
+        ],
+    }
+
+    # Then add circles (draggable)
     for name in joint_names_order:
         if name in saved_adj:
             px = int(saved_adj[name]["x"])
             py = int(saved_adj[name]["y"])
-            fill = "rgba(255,140,0,0.85)"
+            fill = "rgba(255,140,0,0.85)"  # saved/manual
         else:
             px, py = orig_px[name]
-            fill = "rgba(0,200,0,0.85)"
+            fill = "rgba(0,200,0,0.85)"    # AI start
+
         initial_drawing["objects"].append({
             "type": "circle",
             "left": px - radius,
@@ -181,9 +220,8 @@ def create_adjustment_interface(pil_disp, landmarks, width, height, image_key):
             st.session_state.pop(f"canvas_{image_key}", None)
             st.rerun()
 
-    # ✅ IMPORTANT: pass PIL Image, NOT numpy array (prevents ValueError truth-value ambiguity)
     canvas_result = st_canvas(
-        background_image=pil_disp,
+        # NOTE: background is inside initial_drawing, so keep background_image=None
         height=height,
         width=width,
         drawing_mode="transform",
@@ -192,19 +230,21 @@ def create_adjustment_interface(pil_disp, landmarks, width, height, image_key):
         key=f"canvas_{image_key}",
     )
 
-    # Build live adjustments
+    # Parse adjustments:
+    # object[0] is the image; circles start at index 1
     adjustments_live = {}
     moved_threshold_px = 2
 
     if canvas_result.json_data and "objects" in canvas_result.json_data:
         objs = canvas_result.json_data["objects"]
-        for i, obj in enumerate(objs):
+
+        for j, name in enumerate(joint_names_order, start=1):
+            if j >= len(objs):
+                continue
+            obj = objs[j]
             if obj.get("type") != "circle":
                 continue
-            if i >= len(joint_names_order):
-                continue
 
-            name = joint_names_order[i]
             cx = float(obj["left"] + obj["radius"])
             cy = float(obj["top"] + obj["radius"])
 
@@ -394,6 +434,7 @@ if annot_a is not None or annot_b is not None:
 
         if metrics_a and metrics_b:
             st.markdown("#### A vs B (B − A)")
+
             def d(b, a):
                 if any(x is None for x in (a, b)): return np.nan
                 if not (np.isfinite(a) and np.isfinite(b)): return np.nan
