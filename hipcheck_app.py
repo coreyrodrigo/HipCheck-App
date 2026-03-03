@@ -16,7 +16,7 @@ except Exception:
     pass
 
 import streamlit as st
-# WIDE layout so the canvas can use the full available page width
+# Wide layout so the canvas can take the full content width
 st.set_page_config(page_title="Pose Comparison", layout="wide")
 
 # Optional OpenCV (not required for this flow)
@@ -32,27 +32,26 @@ from mediapipe.tasks.python import vision
 # Drawable canvas
 from streamlit_drawable_canvas import st_canvas
 
-# -------------------------------------------------------------------
-# App title & brief instructions
-# -------------------------------------------------------------------
+# ──────────────────────────────────────────────────────────────────────────────
+# App header
+# ──────────────────────────────────────────────────────────────────────────────
 st.title("Pose Comparison")
 st.markdown(
     "- Canvas shows the **entire image** (no cropping, no distortion).\n"
-    "- **Width is never limited**; we only limit **height to ~560 px** to avoid a super-tall page.\n"
-    "- Images are used **as-is from the phone**: we apply **EXIF orientation** only (no enhancement).\n"
+    "- **Width is never limited**; we only limit **height ≈ 560 px** (for usability).\n"
+    "- Images are used **as-is from your phone**: we apply **EXIF orientation** only (no enhancement).\n"
     "- Upload up to **two** photos; the app auto‑assigns **Left closer** / **Right closer** from depth."
 )
 
-# -------------------------------------------------------------------
-# MediaPipe Pose model: cached & stored in /tmp (Cloud-safe)
-# -------------------------------------------------------------------
+# ──────────────────────────────────────────────────────────────────────────────
+# MediaPipe model (cached in /tmp)
+# ──────────────────────────────────────────────────────────────────────────────
 MODEL_DIR = "/tmp"
 MODEL_PATH = os.path.join(MODEL_DIR, "pose_landmarker_full.task")
 MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
     "pose_landmarker_full/float16/1/pose_landmarker_full.task"
 )
-
 os.makedirs(MODEL_DIR, exist_ok=True)
 if not os.path.exists(MODEL_PATH):
     with st.status("Downloading pose model…", expanded=False):
@@ -68,9 +67,9 @@ def load_pose_model():
     )
     return vision.PoseLandmarker.create_from_options(options)
 
-# -------------------------------------------------------------------
+# ──────────────────────────────────────────────────────────────────────────────
 # Landmarks of interest
-# -------------------------------------------------------------------
+# ──────────────────────────────────────────────────────────────────────────────
 JOINTS = {
     "left_shoulder": 11, "right_shoulder": 12,
     "left_hip": 23, "right_hip": 24,
@@ -81,9 +80,9 @@ JOINTS = {
 LEFT_LMKS  = [11, 23, 25, 27, 31]
 RIGHT_LMKS = [12, 24, 26, 28, 32]
 
-# -------------------------------------------------------------------
+# ──────────────────────────────────────────────────────────────────────────────
 # Helpers
-# -------------------------------------------------------------------
+# ──────────────────────────────────────────────────────────────────────────────
 def mp_image_from_pil(img: Image.Image) -> mp.Image:
     return mp.Image(image_format=mp.ImageFormat.SRGB, data=np.asarray(img))
 
@@ -230,31 +229,41 @@ def annotate_full(img_full: Image.Image, full_joints: Dict[str, Tuple[int, int]]
         y += 22
     return out
 
-# -------------------------------------------------------------------
-# Core per-image routine
-# -------------------------------------------------------------------
+# ──────────────────────────────────────────────────────────────────────────────
+# Core per-image routine (anti‑flicker + stable sizing)
+# ──────────────────────────────────────────────────────────────────────────────
 def process_image(file, label: str):
     """
-    - Load using EXIF orientation to match phone view; no enhancement.
-    - DISPLAY SCALE: only if height > ~560 px → scale = 560 / H; width is never capped by us.
-    - Canvas uses the scaled image; joints map back to full-res for metrics & final annotation.
+    - Load using EXIF orientation only (matches phone view).
+    - DISPLAY SCALE: limit only by height ≈ 560 px; width is never capped by us.
+      We compute size and scale ONCE per image and persist in session_state.
+    - Canvas uses the scaled image with update_streamlit=False (no reruns while dragging).
+    - Joints map back to full-res for metrics & final annotation.
     - Returns (annotated_fullres, metrics, side).
     """
     if file is None:
         return None, None, None
 
-    # EXIF orientation ONLY (matches how your phone shows the image)
+    # A stable per-file key for session state
+    uid = f"{file.name}-{getattr(file, 'size', 'na')}"
+    size_key = f"disp_size_{uid}"
+    init_key = f"init_json_{uid}"
+
+    # EXIF orientation ONLY (matches phone view)
     img_full = ImageOps.exif_transpose(Image.open(file)).convert("RGB")
     full_w, full_h = img_full.size
 
-    # --- height-based scaling (≈ 560 px cap) ---
-    MAX_H = 560
-    scale = min(1.0, MAX_H / float(full_h))
-    disp_w = int(full_w * scale)
-    disp_h = int(full_h * scale)
+    # Compute display size ONCE per image (height-limited ≈ 560 px)
+    if size_key not in st.session_state:
+        MAX_H = 560
+        scale = min(1.0, MAX_H / float(full_h))
+        disp_w = int(full_w * scale)
+        disp_h = int(full_h * scale)
+        st.session_state[size_key] = (disp_w, disp_h, scale)
+    disp_w, disp_h, scale = st.session_state[size_key]
     img_disp = img_full if scale == 1.0 else img_full.resize((disp_w, disp_h), Image.LANCZOS)
 
-    # Pose detection on the full-resolution image for accuracy
+    # Pose detection on the full-resolution image
     model = load_pose_model()
     result = model.detect(mp_image_from_pil(img_full))
     if not result.pose_landmarks:
@@ -270,32 +279,34 @@ def process_image(file, label: str):
     lz, rz = mean_z(LEFT_LMKS), mean_z(RIGHT_LMKS)
     side = "left" if (np.isfinite(lz) and np.isfinite(rz) and lz < rz) else "right"
 
-    # Full-res joints
+    # Joints (full-res) → scale down to display coords ONCE
     full_joints0 = joints_from_landmarks(lmks, full_w, full_h)
-    # Display joints (scaled)
     disp_joints0 = {k: (int(x * scale), int(y * scale)) for k, (x, y) in full_joints0.items()}
 
     st.caption(f"{label}: original {full_w}×{full_h} → canvas {disp_w}×{disp_h} (scale={scale:.3f})")
     st.markdown("**Drag joints** on the canvas below (whole photo is shown; width is never limited).")
 
-    ss_key = f"init_json_{label}_{file.name}"
-    if ss_key not in st.session_state:
-        st.session_state[ss_key] = build_canvas_json(img_disp, disp_joints0)
+    # Build the Fabric JSON ONLY once per image
+    if init_key not in st.session_state:
+        st.session_state[init_key] = build_canvas_json(img_disp, disp_joints0)
 
-    canvas = st_canvas(
-        fill_color="rgba(0,0,0,0)",
-        stroke_width=0,
-        background_color="rgba(0,0,0,0)",
-        update_streamlit=False,  # <<< anti-flicker: update only on drop, not every drag step
-        height=disp_h,
-        width=disp_w,
-        drawing_mode="transform",
-        initial_drawing=st.session_state[ss_key],
-        display_toolbar=True,
-        key=f"canvas_{label}_{file.name}",
-    )
+    # Keep the canvas mounted in a stable container to avoid layout reflow
+    canvas_area = st.container()
+    with canvas_area:
+        canvas = st_canvas(
+            fill_color="rgba(0,0,0,0)",
+            stroke_width=0,
+            background_color="rgba(0,0,0,0)",
+            update_streamlit=False,          # anti‑flicker: update on mouse-up only
+            height=disp_h,
+            width=disp_w,
+            drawing_mode="transform",
+            initial_drawing=st.session_state[init_key],
+            display_toolbar=True,
+            key=f"canvas_{uid}",
+        )
 
-    json_data = canvas.json_data or st.session_state[ss_key]
+    json_data = canvas.json_data or st.session_state[init_key]
     disp_joints = extract_display_joints(json_data, disp_joints0)
 
     # Map back to full resolution for metric computation & annotation
@@ -304,14 +315,15 @@ def process_image(file, label: str):
     metrics = compute_metrics(full_joints, full_w, full_h, side)
     annot_full = annotate_full(img_full, full_joints, metrics)
 
+    # Persist only when there is a new JSON (on drop), to keep the canvas stable
     if canvas.json_data:
-        st.session_state[ss_key] = canvas.json_data
+        st.session_state[init_key] = canvas.json_data
 
     return annot_full, metrics, side
 
-# -------------------------------------------------------------------
-# UI: upload & results
-# -------------------------------------------------------------------
+# ──────────────────────────────────────────────────────────────────────────────
+# UI: upload & canvases (using tabs so each gets full width)
+# ──────────────────────────────────────────────────────────────────────────────
 files = st.file_uploader(
     "Upload up to 2 images (JPG/PNG/HEIC). Phone orientation is preserved; canvas height ≈ 560 px.",
     type=["jpg", "jpeg", "png", "heic", "HEIC", "heif", "HEIF"],
@@ -325,9 +337,11 @@ if files and len(files) > 2:
 left_pack, right_pack = None, None
 
 if files:
-    for i, f in enumerate(files, 1):
-        with st.container(border=True):
-            annot, metrics, side = process_image(f, f"Image {i}")
+    tab_labels = [f"Image {i+1}" for i in range(len(files))]
+    tabs = st.tabs(tab_labels)
+    for t, f, label in zip(tabs, files, tab_labels):
+        with t:
+            annot, metrics, side = process_image(f, label)
             if annot is None:
                 continue
             if side == "left" and left_pack is None:
@@ -335,30 +349,40 @@ if files:
             elif side == "right" and right_pack is None:
                 right_pack = (annot, metrics)
             else:
-                st.info(f"Image {i} also appears to be **{side}-closer**. Capture the opposite side for comparison.")
+                st.info(f"{label} also appears to be **{side}-closer**. Capture the opposite side for comparison.")
 
-# Results
+# ──────────────────────────────────────────────────────────────────────────────
+# Results (PNG bytes to avoid Streamlit TypeError)
+# ──────────────────────────────────────────────────────────────────────────────
 if left_pack or right_pack:
     st.header("Results (Annotated Full‑Res Outputs)")
-    cols = st.columns(2)
 
-    # Convert PIL -> PNG bytes before st.image to avoid Streamlit TypeError
-    def show_img(col, pil_img, title):
+    def show_img(pil_img, title: str):
         buf = BytesIO()
         pil_img.save(buf, format="PNG")
-        with col:
-            st.subheader(title)
-            st.image(buf.getvalue(), use_container_width=True)
+        st.subheader(title)
+        st.image(buf.getvalue(), use_container_width=True)
 
+    r_tabs = st.tabs(["Left Closer", "Right Closer"])
     if left_pack:
-        show_img(cols[0], left_pack[0], "Left Closer")
+        with r_tabs[0]:
+            show_img(left_pack[0], "Left Closer")
+    else:
+        with r_tabs[0]:
+            st.info("No left-closer image provided.")
     if right_pack:
-        show_img(cols[1], right_pack[0], "Right Closer")
+        with r_tabs[1]:
+            show_img(right_pack[0], "Right Closer")
+    else:
+        with r_tabs[1]:
+            st.info("No right-closer image provided.")
 
+    # Numeric tables
     rows = []
     if left_pack:  rows.append({"Image": "Left closer",  **left_pack[1]})
     if right_pack: rows.append({"Image": "Right closer", **right_pack[1]})
     if rows:
+        st.subheader("Metrics")
         st.dataframe(pd.DataFrame(rows), use_container_width=True)
 
         if left_pack and right_pack:
@@ -379,4 +403,4 @@ if left_pack or right_pack:
             }])
             st.dataframe(delta, use_container_width=True)
 
-st.caption("Canvas shows the full photo; width is never limited; height ≈ 560 px; EXIF orientation only; no cropping or enhancement.")
+st.caption("Anti‑flicker enabled (updates on drop). Canvas shows the full photo; width never limited; height ≈ 560 px; EXIF orientation only; no cropping or enhancement.")
