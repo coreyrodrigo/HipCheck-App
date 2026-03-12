@@ -36,11 +36,8 @@ from streamlit_drawable_canvas import st_canvas
 # ──────────────────────────────────────────────────────────────────────────────
 st.title("Pose Comparison")
 st.markdown(
-    "- Canvas shows the **entire image** (no cropping, no distortion).\n"
-    "- **Width is never limited**; we only limit **height ≈ 560 px** for usability.\n"
-    "- Images are used **as-is from your phone**: we apply **EXIF orientation** only (no enhancement).\n"
-    "- Upload up to **two** photos. The app can auto‑assign **Left closer** / **Right closer** from depth.\n"
-    "- **Step‑wise**: Adjust keypoints → **Confirm points** → we draw the stick figure & compute **Jurdan** + **HipCheck**.\n"
+    "- Upload up to **two** photos. The app will auto‑assign **Left closer** / **Right closer** from depth.\n"
+    "- Review image, Adjust keypoints if needed → **Confirm points** →  **Jurdan** + **HipCheck**.\n"
     "- While you drag, **lines and angles update live** on the canvas."
 )
 if not HEIC_OK:
