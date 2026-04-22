@@ -2,10 +2,15 @@ import os
 import io
 import base64
 import hashlib
+import ssl
 import tempfile
 import urllib.request
 from io import BytesIO
 from typing import Dict, Tuple, Optional, List
+
+# MediaPipe can hit protobuf descriptor issues on some local Python installs
+# unless protobuf uses the pure-Python implementation.
+os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
 
 import numpy as np
 import pandas as pd
@@ -88,7 +93,15 @@ def ensure_model():
         return
     try:
         with st.status("Downloading pose model…", expanded=False):
-            urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+            try:
+                import certifi
+                ssl_context = ssl.create_default_context(cafile=certifi.where())
+            except Exception:
+                ssl_context = ssl.create_default_context()
+            with urllib.request.urlopen(MODEL_URL, context=ssl_context) as response:
+                model_bytes = response.read()
+            with open(MODEL_PATH, "wb") as model_file:
+                model_file.write(model_bytes)
     except Exception:
         alt = os.path.join(os.path.dirname(__file__), "pose_landmarker_full.task")
         if os.path.exists(alt):
@@ -407,6 +420,14 @@ def file_bytes_and_uid(file, index: int):
     uid = f"{index}-{h}-{len(raw)}"
     return raw, uid
 
+def local_file_as_upload(path: str) -> BytesIO:
+    """Small adapter so local test files behave like Streamlit uploads."""
+    with open(path, "rb") as f:
+        raw = f.read()
+    upload = BytesIO(raw)
+    upload.name = os.path.basename(path)
+    return upload
+
 @st.cache_data(show_spinner=False)
 def detect_landmarks(raw_bytes: bytes):
     """
@@ -597,13 +618,27 @@ def process_image(file, label: str, index: int):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# UI: upload & canvases (tabs → full width per image; both always shown)
+# UI: upload & canvases
 # ──────────────────────────────────────────────────────────────────────────────
 files = st.file_uploader(
     "Upload up to 2 images (JPG/PNG/HEIC). Phone orientation is preserved; canvas height ≈ 560 px.",
     type=["jpg", "jpeg", "png", "heic", "HEIC", "heif", "HEIF"],
     accept_multiple_files=True
 )
+
+LOCAL_TEST_PATHS = [
+    "/Users/coreyrodrigo/Downloads/IMG_1016.heic",
+    "/Users/coreyrodrigo/Downloads/IMG_1015.heic",
+]
+available_test_paths = [p for p in LOCAL_TEST_PATHS if os.path.exists(p)]
+if len(available_test_paths) == len(LOCAL_TEST_PATHS):
+    use_local_test_images = st.checkbox(
+        "Use local test images from Downloads",
+        help="Loads IMG_1016.heic and IMG_1015.heic directly from this Mac for local Codex testing.",
+    )
+    if use_local_test_images:
+        files = [local_file_as_upload(p) for p in available_test_paths]
+        st.info("Loaded local test images: IMG_1016.heic and IMG_1015.heic")
 
 if files and len(files) > 2:
     st.warning("You uploaded more than two images; using the first two.")
@@ -613,10 +648,14 @@ if files and len(files) > 2:
 per_image_results: List[Optional[Tuple[Image.Image, dict, str, int, int]]] = [None] * (len(files) if files else 0)
 
 if files:
-    tab_labels = [f"Image {i+1}" for i in range(len(files))]
-    tabs = st.tabs(tab_labels)
-    for idx, (t, f) in enumerate(zip(tabs, files), start=1):
-        with t:
+    st.header("Review Images")
+    st.caption(
+        "Both image editors are shown as regular page sections instead of tabs. "
+        "This keeps the draggable canvas mounted properly for Image 2."
+    )
+    for idx, f in enumerate(files, start=1):
+        with st.container(border=True):
+            st.subheader(f"Image {idx}")
             confirmed, side, dw, dh, annot_disp, metrics = process_image(f, f"Image {idx}", idx)
             if confirmed and annot_disp is not None and metrics is not None:
                 per_image_results[idx-1] = (annot_disp, metrics, side, dw, dh)
