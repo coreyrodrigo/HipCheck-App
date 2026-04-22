@@ -2,6 +2,7 @@ import os
 import io
 import base64
 import hashlib
+import tempfile
 import urllib.request
 from io import BytesIO
 from typing import Dict, Tuple, Optional, List
@@ -23,12 +24,23 @@ import streamlit as st
 # Wide layout so each canvas can use the full content width
 st.set_page_config(page_title="Pose Comparison", layout="wide")
 
-import mediapipe as mp
-from mediapipe.tasks import python as mp_python
-from mediapipe.tasks.python import vision
+MEDIAPIPE_IMPORT_ERROR = None
+try:
+    import mediapipe as mp
+    from mediapipe.tasks import python as mp_python
+    from mediapipe.tasks.python import vision
+except Exception as exc:
+    MEDIAPIPE_IMPORT_ERROR = exc
+    mp = None
+    mp_python = None
+    vision = None
 
-# Drawable canvas
-from streamlit_drawable_canvas import st_canvas
+CANVAS_IMPORT_ERROR = None
+try:
+    from streamlit_drawable_canvas import st_canvas
+except Exception as exc:
+    CANVAS_IMPORT_ERROR = exc
+    st_canvas = None
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -43,10 +55,26 @@ st.markdown(
 if not HEIC_OK:
     st.caption("Tip: To open HEIC/HEIF (iPhone), add `pillow-heif` to requirements.txt, or upload JPG/PNG.")
 
+if MEDIAPIPE_IMPORT_ERROR is not None:
+    st.error(
+        "MediaPipe is not installed or failed to load. Add `mediapipe` to your environment "
+        "and restart the Streamlit app."
+    )
+    st.code(str(MEDIAPIPE_IMPORT_ERROR))
+    st.stop()
+
+if CANVAS_IMPORT_ERROR is not None:
+    st.error(
+        "The draggable editor requires `streamlit-drawable-canvas`. Add that package to your "
+        "environment and restart the Streamlit app."
+    )
+    st.code(str(CANVAS_IMPORT_ERROR))
+    st.stop()
+
 # ──────────────────────────────────────────────────────────────────────────────
 # MediaPipe model (cached in /tmp) with local fallback
 # ──────────────────────────────────────────────────────────────────────────────
-MODEL_DIR = "/tmp"
+MODEL_DIR = tempfile.gettempdir()
 MODEL_PATH = os.path.join(MODEL_DIR, "pose_landmarker_full.task")
 MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
@@ -526,7 +554,7 @@ def process_image(file, label: str, index: int):
         with cols_reset_confirm[0]:
             if st.button(f"🔄 Reset points for {label}", key=f"reset_{uid}"):
                 st.session_state[last_disp_key] = disp_joints0
-                disp_joints = disp_joints0
+                st.rerun()
         with cols_reset_confirm[1]:
             if st.button(f"✅ Confirm points for {label}", key=f"confirm_{uid}"):
                 disp_joints_final = st.session_state.get(last_disp_key, disp_joints)
@@ -541,6 +569,7 @@ def process_image(file, label: str, index: int):
                 st.session_state[annot_disp_k]  = annot_disp
 
                 confirmed = True
+                st.rerun()
 
     else:
         # Already confirmed → show the annotated image at the SAME SIZE as the canvas
@@ -558,7 +587,7 @@ def process_image(file, label: str, index: int):
             )
             if st.button(f"✏️ Edit points for {label}", key=f"edit_{uid}"):
                 st.session_state[confirmed_key] = False
-                confirmed = False
+                st.rerun()
 
     # Return current state for collector
     if st.session_state.get(confirmed_key, False):
